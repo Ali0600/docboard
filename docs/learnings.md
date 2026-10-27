@@ -2,6 +2,19 @@
 
 Teachable things that came up building docboard. Newest first.
 
+### `Referrer-Policy: no-referrer` turns a page's own form posts into `Origin: null`
+
+A CSRF guard that accepts only the page's own Origin refuses the page's own forms when the page
+also sends `Referrer-Policy: no-referrer`: Chrome then sends `Origin: null` on its form posts.
+
+**Why it came up:** the board's "Add a card" form got a 403 in the first real-browser run, while
+all 80 tests passed. The tests sent the Origin header a test author expects, not the one a browser
+sends under that policy.
+
+**Takeaway:** use `Referrer-Policy: same-origin` (still nothing to other sites). When Origin is
+absent or `null`, decide by `Sec-Fetch-Site`, a header no page can set. Drive a state-changing form
+once in a real browser before trusting a request guard.
+
 ### A byte prefilter is a contract with the writer's serializer
 
 Skipping lines that lack `"type":"assistant"` before parsing them is what makes a 1.9 GB scan take

@@ -6,23 +6,28 @@ Code, and the "Needs you" items those sessions raised. Every source is read-only
 remembered in a local SQLite file. A monorepo's sub-projects (each game of a games monorepo) get a
 board of their own.
 
-Status: the sources are in. `docboard sync --dry-run` reads every source and prints the board as a
-table; the database and the web page come next.
+Status: the board works end to end: `docboard serve` shows it, cards can be dragged, resolved,
+dismissed, given another game or added by hand, and a triage page clears old Needs-you items in
+bulk. Still to come: a `/board` command for Claude Code sessions and retiring the earlier dashboard.
 
 ## Run it
 
 ```sh
 uv sync                                    # Python 3.12 and the dev tools, from uv.lock
 cp config/projects.example.toml config/projects.toml   # then list your projects
-uv run docboard sync --dry-run --sample 3  # every source, the board as a table, a few cards
-uv run docboard sync --dry-run --json data/{project}.json
-uv run docboard diff data/before.json data/after.json --kinds idea,roadmap --strict
+uv run docboard sync                       # read every source into data/board.db
+uv run docboard serve                      # the board on http://127.0.0.1:8742
 ./scripts/gate.sh                          # lint, format check and tests: what CI runs
-uv run docboard privacy                    # scan the repo for personal identifiers
 ```
 
-Only the projects listed in `config/projects.toml` are read. The `--json` files hold your own
-sessions' text, so they are written owner-only (mode 600) and `data/` is git-ignored.
+More: `docboard sync --dry-run --sample 3` prints the board as a table without storing anything;
+`--json data/{project}.json` writes every card, and `docboard diff a.json b.json --kinds
+idea,roadmap --strict` proves a docs move kept every card id; `docboard privacy` scans this repo
+for personal identifiers.
+
+Only the projects listed in `config/projects.toml` are read. The database and `--json` files hold
+your own sessions' text, so they are owner-only (mode 600) and `data/` is git-ignored. An open
+board older than two minutes refreshes itself in the background; "Sync now" does it at once.
 
 ## How it works
 
@@ -49,7 +54,19 @@ sessions' text, so they are written owner-only (mode 600) and `data/` is git-ign
   for a week. A partly merged plan quiet for two weeks moves to Done with the gap on its card.
 - **Ids** (`ids.py`) come from content, never a path, so a doc moved into a game's folder keeps
   its cards; they are frozen behind `ID_VERSION`.
-- **Floors**: `--baseline` fails a sync when a source that cannot be empty fell to zero or by half.
+- **The store** (`store.py`, SQLite, owner-only) keeps the last sync's cards and your moves. A move
+  holds while the card's source still says what it said when you moved it; when the source moves
+  the card, your move is dropped and the card's history says so. Needs-you cards never move by
+  themselves, so resolving or dismissing one is permanent. A reworded Backlog bullet keeps your
+  moves; a card gone from its source is kept and listed, never deleted. A sync whose source
+  collapsed (fell to zero, or by more than half, since the last good one) writes nothing; with
+  GitHub unreachable, PR and plan cards keep their last good state.
+- **The page** (`web.py`, FastAPI and Jinja2) answers only on the loopback address, and only to a
+  loopback Host header (against DNS rebinding). Nothing changes except through a POST from the
+  board's own page (Origin, or the browser's Sec-Fetch-Site), so an outside page can neither read
+  the board nor move a card. All text is escaped, only http(s) links are made, and the
+  Content-Security-Policy allows no script but the page's own 50-line drag-and-drop file. Every
+  card also has a Move control that works without it.
 - **Privacy** (`privacy.py`): this repo is public, so every tracked or addable file is scanned for
   home-folder paths naming a real user, email addresses outside placeholder domains, and the terms
   in a git-ignored `config/private-identifiers.txt`. Test fixtures are synthetic.
@@ -63,8 +80,12 @@ sessions' text, so they are written owner-only (mode 600) and `data/` is git-ign
   using a byte prefilter before JSON parsing and de-duplicating records copied across files.
 - An idempotent sources-to-cards derivation with content-derived, versioned ids. A test moves a doc
   from the root into a sub-project and proves all of its cards keep their ids.
-- 8 guards each proven by a deliberate sabotage before merging: dedupe, ids, the plan rule, the
-  collapse floor, Needs-you persistence, disk-saved approvals, the folder rule and sidechains.
+- 12 guards each proven by a deliberate sabotage before merging, among them the id rule, the
+  cross-file dedupe, the plan rule, the collapse floor that writes nothing, a move that must not
+  outlive its source, and the page's Host and same-origin checks.
+- A localhost web app hardened against DNS rebinding, cross-site writes and XSS (Host allowlist,
+  Origin and Sec-Fetch-Site checks, a strict Content-Security-Policy, no third-party JavaScript),
+  checked in a real browser, which caught a bug the 80 tests had missed.
 - A supply-chain cooldown on every dependency: uv resolves only releases at least 14 days old,
   checked against PyPI's upload times (ruff held at 0.17.0 while 0.17.1 to 0.17.3 were inside the
   window).

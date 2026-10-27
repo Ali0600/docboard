@@ -15,6 +15,22 @@
   sessions rarely end (one session's transcript was still being written 15 days after its first
   PR), and a hook adds work to every session end in every project. Revisit hook: a
   `docboard sync --project-from-cwd` entry in `~/.claude/settings.json`'s hooks.
+- **Reading only what a transcript gained since the last sync** (2026-10-27, the page): a cursor
+  per file (offset, inode, hashes of its head and of the bytes before the offset). Deferred: a
+  full re-read of 1.9 GB takes about 10 s, and the board refreshes in the background. Revisit hook:
+  `transcripts.scan_file` and a `cursor` table, with a rewritten or shorter file read from 0.
+
+## 2026-10-27 — The page's drag and drop is its own script, not htmx and SortableJS
+
+The approved plan named vendored htmx and SortableJS for the page.
+- **The browser's own drag-and-drop API in a 50-line script of the board's own, plus a Move
+  control on every card that needs no script at all:** *chosen*. No third-party JavaScript
+  enters a public repo, and the Content-Security-Policy can allow no script but this one file.
+- **Vendored htmx and SortableJS, pinned and hash-checked:** *rejected*: two libraries to
+  download, pin and keep current, for a drag and a form post the browser does natively.
+
+Revisit hook: `src/docboard/static/board.js` and `templates/board.html`, if the board ever needs
+reordering within a column or live updates.
 
 ## 2026-10-27 — A fresh board in its own repo, keeping its own state
 

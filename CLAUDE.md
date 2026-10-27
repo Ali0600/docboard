@@ -6,6 +6,8 @@
 |---|---|
 | `./scripts/gate.sh` | `uv sync --locked`, `ruff check`, `ruff format --check`, `pytest`; every step runs and reports, non-zero if any failed. CI runs exactly this. |
 | `uv run docboard sync --dry-run [--project p] [--sample n] [--json file] [--baseline file]` | Reads every source of the configured projects and prints counts per source and the board as a table; `--json` writes every card (owner-only file), `--baseline` exits 1 when a source collapsed since that file. |
+| `uv run docboard sync [--project p] [--db file]` | Reads every source into the board's database (`data/board.db`) under a machine-wide lock; refuses, writing nothing, when a source collapsed since the last good sync. |
+| `uv run docboard serve [--port 8742]` | The board on `http://127.0.0.1:8742`; any host but loopback is refused. Start it in the background and check it in the built-in browser. |
 | `uv run docboard diff a.json b.json [--kinds idea,roadmap] [--strict]` | Card ids only in one run, and fields changed in both; `--strict` exits 1 when an id came or went (the check a docs move must pass). |
 | `uv run docboard privacy` | Scans every tracked or addable file for personal identifiers. |
 | `uv run pytest -k <name>` | One test while iterating. |
@@ -29,6 +31,12 @@
   never includes a file path. Changing a derivation means a new version and a migration of stored
   moves.
 - **A Needs-you item never leaves that column by derivation**; only the owner's action moves it.
+- **The page's guards stay whole:** the loopback Host allowlist, the same-origin check on every
+  POST (`web._same_origin`), escaped output (no `|safe` on source text), http(s)-only links, the
+  Content-Security-Policy with no script but `static/board.js`, and no third-party JavaScript. A
+  change to a form or a request guard is driven once in the built-in browser, not only in tests.
+- **Schema changes are new migrations** appended to `store.MIGRATIONS`; a shipped one is never
+  edited.
 - **The 14-day dependency cooldown stays** (`[tool.uv] exclude-newer`); never set it to `false`.
   A package that must be newer gets an `exclude-newer-package` entry with a dated reason.
 - **Third-party GitHub Actions are pinned to full commit SHAs** with the tag in a comment, and the
