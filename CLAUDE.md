@@ -8,6 +8,7 @@
 | `uv run docboard sync --dry-run [--project p] [--sample n] [--json file] [--baseline file]` | Reads every source of the configured projects and prints counts per source and the board as a table; `--json` writes every card (owner-only file), `--baseline` exits 1 when a source collapsed since that file. |
 | `uv run docboard sync [--project p] [--db file]` | Reads every source into the board's database (`data/board.db`) under a machine-wide lock; refuses, writing nothing, when a source collapsed since the last good sync. |
 | `uv run docboard serve [--port 8742]` | The board on `http://127.0.0.1:8742`; any host but loopback is refused. Start it in the background and check it in the built-in browser. |
+| `uv run docboard board [--cwd dir] [--no-sync] [--port 8742]` | Finds the configured project (and sub-project) a folder belongs to, a git worktree's included, syncs that project and prints its board's link and whether the page is running (exit 2: in no configured project; 1: the sync was not stored). The global `/board` command runs it from a session's folder. |
 | `uv run docboard diff a.json b.json [--kinds idea,roadmap] [--strict]` | Card ids only in one run, and fields changed in both; `--strict` exits 1 when an id came or went (the check a docs move must pass). |
 | `uv run docboard privacy` | Scans every tracked or addable file for personal identifiers. |
 | `uv run pytest -k <name>` | One test while iterating. |

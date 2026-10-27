@@ -19,6 +19,31 @@
   per file (offset, inode, hashes of its head and of the bytes before the offset). Deferred: a
   full re-read of 1.9 GB takes about 10 s, and the board refreshes in the background. Revisit hook:
   `transcripts.scan_file` and a `cursor` table, with a rewritten or shorter file read from 0.
+- **A login service keeping the page up** (2026-10-27, the rollout): a LaunchAgent running
+  `docboard serve`, so the link always answers. Deferred: the owner took the cut-over without it,
+  and `/board` starts the page for the session when it is down. Revisit hook: a LaunchAgent from
+  `uv tool install` with absolute paths, `PATH`, `HOME` and `LANG` set, proved under `env -i`,
+  nothing under `~/Documents`.
+
+## 2026-10-27 — The rollout: `/board`, docboard on its own board, and the cut-over at once
+
+The board worked by hand (`docboard serve`); what remained was a way in from any session and
+retiring the earlier dashboard (its SessionEnd hook, its `/sync-board` command and its block in the
+owner's global CLAUDE.md).
+- **`/board` and docboard as a second project, both boards side by side for a few days:**
+  *rejected* by the owner, who took the cut-over now instead (the recommendation, so the old board
+  would show what the new one misses before anything was retired).
+- **The same plus a login service keeping the page up:** *deferred, worth trying* (Backlog).
+- **The same plus the full cut-over now:** *chosen* by the owner. The hook, the command and the
+  block went (backed up first); the old repo, its database and its own login service stay as they
+  are. What is lost: the old hook flagged every project's sessions and a model scan read tasks,
+  suggestions and failures out of them; this board reads only the configured projects, and only
+  their structured sources (the model reading is the Backlog's "loose prose" item).
+- `/board` runs `docboard board`, which finds the configured project (and game) of the session's
+  folder, a git worktree's included, syncs it and prints its link: the folder-to-board rule is
+  code with tests, not instructions in a prompt.
+
+Revisit hook: `locate.py` for how a folder finds its board; the Backlog's login service.
 
 ## 2026-10-27 — The page's drag and drop is its own script, not htmx and SortableJS
 

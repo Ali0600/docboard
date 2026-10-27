@@ -10,9 +10,9 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
-from docboard import __version__, config, privacy, runner, sync
+from docboard import __version__, config, locate, privacy, runner, sync
 from docboard.derive import COLUMNS
-from docboard.store import DEFAULT_DB, FloorError
+from docboard.store import DEFAULT_DB, ApplyReport, FloorError
 
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
 DEFAULT_PORT = 8742
@@ -103,13 +103,54 @@ def _sync_store(args: argparse.Namespace) -> int:
             print(f"{project.name}: {e}")
             status = 1
             continue
-        print(
-            f"{project.name}: {len(result.cards)} cards in {result.timings['total']:.1f} s;"
-            f" {report.added} new, {report.updated} updated, {report.gone} gone,"
-            f" {report.renamed} renamed, {report.followed_source} moves dropped (source changed)"
-        )
-        for d in result.degraded:
-            print(f"  DEGRADED {d} (kept the last good {', '.join(report.kept_frozen)} cards)")
+        _report(project, result, report)
+    return status
+
+
+def _report(project: config.Project, result: sync.SyncResult, report: ApplyReport) -> None:
+    print(
+        f"{project.name}: {len(result.cards)} cards in {result.timings['total']:.1f} s;"
+        f" {report.added} new, {report.updated} updated, {report.gone} gone,"
+        f" {report.renamed} renamed, {report.followed_source} moves dropped (source changed)"
+    )
+    for d in result.degraded:
+        print(f"  DEGRADED {d} (kept the last good {', '.join(report.kept_frozen)} cards)")
+
+
+def _board(args: argparse.Namespace) -> int:
+    cfg = config.load(Path(args.config) if args.config else None)
+    cwd = Path(args.cwd) if args.cwd else Path.cwd()
+    found = locate.locate(cfg, cwd)
+    if found is None:
+        names = ", ".join(p.name for p in cfg.projects)
+        print(f"board: {cwd} is in none of the configured projects ({names});"
+              f" add it to {config.DEFAULT_CONFIG.relative_to(config.REPO_ROOT)}")  # fmt: skip
+        return 2
+    project, sub = found.project, found.sub
+    status = 0
+    if not args.no_sync:
+        db = Path(args.db) if args.db else DEFAULT_DB
+        try:
+            result, report = runner.run_sync(cfg, project, db)
+        except (FloorError, runner.Busy) as e:
+            print(f"{project.name}: sync not stored ({e}); the board shows the last good one")
+            status = 1
+        else:
+            _report(project, result, report)
+            if sub is not None and sub not in result.subs:
+                print(f"  {sub!r} has no board of its own yet; showing the whole project")
+                sub = None
+    url = locate.board_url(args.port, project.name, sub)
+    print(f"board: {url}")
+    state = locate.page_state(url)
+    if state == "up":
+        print("page: running")
+    elif state == "stale":
+        print(f"page: running, but started before {project.name} was in the config: restart it")
+    elif state == "down":
+        print(f"page: not running; start it with: cd {config.REPO_ROOT} && uv run docboard serve")
+    else:
+        print(f"page: {state}")
     return status
 
 
@@ -200,6 +241,14 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--config", help="config file (default: config/projects.toml)")
     v.add_argument("--db", help="the board's database (default: data/board.db)")
     v.set_defaults(func=_serve)
+
+    b = sub.add_parser("board", help="sync the board of the project you are in and print its link")
+    b.add_argument("--cwd", help="a folder in the project (default: the current directory)")
+    b.add_argument("--no-sync", action="store_true", help="only find the board and its link")
+    b.add_argument("--port", type=int, default=DEFAULT_PORT)
+    b.add_argument("--config", help="config file (default: config/projects.toml)")
+    b.add_argument("--db", help="the board's database (default: data/board.db)")
+    b.set_defaults(func=_board)
 
     d = sub.add_parser("diff", help="compare the cards of two --json files")
     d.add_argument("before")

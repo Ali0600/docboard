@@ -6,9 +6,10 @@ Code, and the "Needs you" items those sessions raised. Every source is read-only
 remembered in a local SQLite file. A monorepo's sub-projects (each game of a games monorepo) get a
 board of their own.
 
-Status: the board works end to end: `docboard serve` shows it, cards can be dragged, resolved,
-dismissed, given another game or added by hand, and a triage page clears old Needs-you items in
-bulk. Still to come: a `/board` command for Claude Code sessions and retiring the earlier dashboard.
+Status: in use. `docboard serve` shows the board; cards can be dragged, resolved, dismissed, given
+another game or added by hand, and a triage page clears old Needs-you items in bulk. A Claude Code
+`/board` command runs `docboard board` from any session. It replaced an earlier dashboard on
+2026-10-27.
 
 ## Run it
 
@@ -17,6 +18,7 @@ uv sync                                    # Python 3.12 and the dev tools, from
 cp config/projects.example.toml config/projects.toml   # then list your projects
 uv run docboard sync                       # read every source into data/board.db
 uv run docboard serve                      # the board on http://127.0.0.1:8742
+uv run docboard board --cwd ~/some/folder  # sync the board that folder belongs to; print its link
 ./scripts/gate.sh                          # lint, format check and tests: what CI runs
 ```
 

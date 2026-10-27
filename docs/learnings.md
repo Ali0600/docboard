@@ -2,6 +2,19 @@
 
 Teachable things that came up building docboard. Newest first.
 
+### Python's `HTTPServer` looks its own address up in DNS when it binds
+
+`http.server.HTTPServer.server_bind` calls `socket.getfqdn(host)` to fill `server_name`. On this
+Mac's Homebrew Python 3.12 a reverse lookup of `127.0.0.1` took 35 s (12.6 s when run again),
+while the system Python answered at once, so the cost depends on the interpreter's resolver.
+
+**Why it came up:** the page-check test spent 35 s of its 37 s starting a stub server in a
+fixture, and a run of 11 sabotages took six minutes. `--durations` showed the time in setup, not
+in any test.
+
+**Takeaway:** start a throwaway test server with `socketserver.TCPServer`, which skips the lookup,
+and when a test is slow, time its setup apart from its call before speeding the code up.
+
 ### `Referrer-Policy: no-referrer` turns a page's own form posts into `Origin: null`
 
 A CSRF guard that accepts only the page's own Origin refuses the page's own forms when the page
