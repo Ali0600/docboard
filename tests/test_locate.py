@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import os
 import socket
+import socketserver
 import subprocess
 import threading
 from collections.abc import Iterator
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 import pytest
@@ -86,9 +87,12 @@ def test_a_folder_outside_every_project_finds_none(repo: Path, tmp_path: Path) -
     other = make_repo(tmp_path / "other")  # a git repo, but not in the config
     plain = tmp_path / "plain"
     plain.mkdir()
+    sibling = tmp_path / "demo-copy" / "games" / "alpha"  # its name starts with the project's
+    sibling.mkdir(parents=True)
     c = cfg(mono(repo))
     assert where(c, other / "games" / "alpha") is None
     assert where(c, plain) is None
+    assert where(c, sibling) is None
     assert where(c, tmp_path) is None  # the folder above a project is not inside it
 
 
@@ -134,7 +138,8 @@ class _Handler(BaseHTTPRequestHandler):
 
 @pytest.fixture
 def server() -> Iterator[int]:
-    httpd = HTTPServer(("127.0.0.1", 0), _Handler)
+    # Not HTTPServer: its bind looks the host's name up in DNS (socket.getfqdn), 35 s here.
+    httpd = socketserver.TCPServer(("127.0.0.1", 0), _Handler)
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()
     yield httpd.server_address[1]
