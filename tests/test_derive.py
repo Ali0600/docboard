@@ -212,3 +212,37 @@ def test_backlog_bullet_keeps_its_id_when_it_moves_into_a_game(tmp_path: Path) -
     assert root.keys() == moved.keys()
     (cid,) = root
     assert (root[cid].sub, moved[cid].sub, moved[cid].sub_reason) == ("", "alpha", "path")
+
+
+def test_a_wrap_up_ask_repeating_a_needs_item_is_that_card(tmp_path: Path) -> None:
+    ask = {
+        "recap": "Built it.",
+        "ask": "Do these cards look right enough to build the page?",
+        "actions": [{"label": "Build the page"}],
+    }
+    other = {"recap": "Also.", "ask": "Which colour should the Beta logo use?"}
+    recs = [
+        f.assistant_text(
+            S,
+            "a1",
+            "2026-10-26T10:00:00Z",
+            f.needs_block("Decide — do the board's cards look right before I build the page?"),
+        ),
+        f.tool_use(S, "w1", "2026-10-26T10:00:01Z", "mcp__ccd_turn__wrap_up", "t1", ask),
+        f.tool_use(S, "w2", "2026-10-26T11:00:00Z", "mcp__ccd_turn__wrap_up", "t2", other),
+    ]
+    got = cards(tmp_path, recs)
+    assert sorted(c.id for c in got.values()) == ["ny:a1:1", "wu:t2"]
+    assert got["ny:a1:1"].raised == 2
+
+
+def test_html_entities_in_item_text_are_decoded(tmp_path: Path) -> None:
+    recs = [
+        f.assistant_text(
+            S,
+            "a1",
+            "2026-10-26T10:00:00Z",
+            f.needs_block("Do — open Settings &gt; General &amp; tick it"),
+        )
+    ]
+    assert cards(tmp_path, recs)["ny:a1:1"].title == "Do — open Settings > General & tick it"
