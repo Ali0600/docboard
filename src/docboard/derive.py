@@ -514,7 +514,18 @@ class _Deriver:
         return ids.plan_id(groups[-1].first.id) if groups else None
 
     def wraps(self) -> None:
-        for w in self.inp.scan.wraps.values():
+        needs_by_session: dict[str, list[Card]] = defaultdict(list)
+        for c in self.cards:
+            if c.kind == "needs":
+                needs_by_session[c.source.get("session", "")].append(c)
+        for w in sorted(self.inp.scan.wraps.values(), key=lambda w: (_t(w.ts), w.id)):
+            # A session that asks in its Needs-you block and again in the wrap-up box asked once.
+            twin = next(
+                (c for c in needs_by_session.get(w.session, ()) if similar(w.ask, [c.title])), None
+            )
+            if twin is not None:
+                twin.raised += 1
+                continue
             at = _t(w.ts)
             # The recap tells of the whole session, often several games: the ask alone decides.
             sub, reason = self._transcript_sub(w.session, at, w.ask)

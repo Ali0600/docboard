@@ -10,6 +10,7 @@ conversations on re-attach and forked sessions copy their parent's records.
 
 from __future__ import annotations
 
+import html
 import json
 import re
 from collections import Counter
@@ -222,7 +223,10 @@ def parse_needs(text: str) -> list[tuple[int, str, str, str]]:
         for i, m in enumerate(marks):
             end = marks[i + 1].start() if i + 1 < len(marks) else len(section)
             body = section[m.end() : end].strip().strip("*").strip()
-            found.append((int(m.group(1)), m.group(2), m.group(3).strip(), body[:TEXT_CAP]))
+            # Stored as plain text: entities written in the markdown ("&gt;") are decoded here,
+            # and the page escapes everything again when it renders.
+            title = html.unescape(m.group(3).strip())
+            found.append((int(m.group(1)), m.group(2), title, html.unescape(body)[:TEXT_CAP]))
     return found
 
 
@@ -347,8 +351,8 @@ class _FileScan:
                     tid,
                     session,
                     ts,
-                    str(args["ask"])[:500],
-                    str(args.get("recap") or "")[:TEXT_CAP],
+                    html.unescape(str(args["ask"]))[:500],
+                    html.unescape(str(args.get("recap") or ""))[:TEXT_CAP],
                     actions,
                 ),
             )
