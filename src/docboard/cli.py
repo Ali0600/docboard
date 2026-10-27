@@ -10,8 +10,12 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
-from docboard import __version__, config, privacy, sync
+from docboard import __version__, config, privacy, runner, sync
 from docboard.derive import COLUMNS
+from docboard.store import DEFAULT_DB, FloorError
+
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
+DEFAULT_PORT = 8742
 
 
 def _privacy(args: argparse.Namespace) -> int:
@@ -29,8 +33,7 @@ def _gb(n: int) -> str:
 
 def _sync(args: argparse.Namespace) -> int:
     if not args.dry_run:
-        print("sync: only --dry-run exists until the board's database lands", file=sys.stderr)
-        return 2
+        return _sync_store(args)
     cfg = config.load(Path(args.config) if args.config else None)
     projects = [cfg.project(args.project)] if args.project else list(cfg.projects)
     status = 0
@@ -82,6 +85,48 @@ def _sync(args: argparse.Namespace) -> int:
             if problems:
                 status = 1
     return status
+
+
+def _sync_store(args: argparse.Namespace) -> int:
+    cfg = config.load(Path(args.config) if args.config else None)
+    projects = [cfg.project(args.project)] if args.project else list(cfg.projects)
+    db = Path(args.db) if args.db else DEFAULT_DB
+    status = 0
+    for project in projects:
+        try:
+            result, report = runner.run_sync(cfg, project, db)
+        except FloorError as e:
+            print(f"{project.name}: REFUSED, nothing written: {e}")
+            status = 1
+            continue
+        except runner.Busy as e:
+            print(f"{project.name}: {e}")
+            status = 1
+            continue
+        print(
+            f"{project.name}: {len(result.cards)} cards in {result.timings['total']:.1f} s;"
+            f" {report.added} new, {report.updated} updated, {report.gone} gone,"
+            f" {report.renamed} renamed, {report.followed_source} moves dropped (source changed)"
+        )
+        for d in result.degraded:
+            print(f"  DEGRADED {d} (kept the last good {', '.join(report.kept_frozen)} cards)")
+    return status
+
+
+def _serve(args: argparse.Namespace) -> int:
+    if args.host not in LOOPBACK:
+        print(f"serve: refusing {args.host!r}; the board answers on loopback only", file=sys.stderr)
+        return 2
+    import uvicorn
+
+    from docboard.web import create_app
+
+    cfg = config.load(Path(args.config) if args.config else None)
+    app = create_app(cfg, Path(args.db) if args.db else DEFAULT_DB, args.port)
+    host = "[::1]" if args.host == "::1" else args.host
+    print(f"docboard on http://{host}:{args.port}")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning", server_header=False)
+    return 0
 
 
 def _samples(result: sync.SyncResult, n: int) -> None:
@@ -146,7 +191,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--json", help="also write every card to this file ({project} is replaced)")
     s.add_argument("--sample", type=int, default=0, help="print this many recent cards per column")
     s.add_argument("--baseline", help="a previous --json file: fail if a source collapsed since")
+    s.add_argument("--db", help="the board's database (default: data/board.db)")
     s.set_defaults(func=_sync)
+
+    v = sub.add_parser("serve", help="the board's page on the loopback address")
+    v.add_argument("--host", default="127.0.0.1", help="127.0.0.1, localhost or ::1 only")
+    v.add_argument("--port", type=int, default=DEFAULT_PORT)
+    v.add_argument("--config", help="config file (default: config/projects.toml)")
+    v.add_argument("--db", help="the board's database (default: data/board.db)")
+    v.set_defaults(func=_serve)
 
     d = sub.add_parser("diff", help="compare the cards of two --json files")
     d.add_argument("before")

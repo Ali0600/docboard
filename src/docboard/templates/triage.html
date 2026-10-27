@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Triage · {{ project.name }} · docboard{% endblock %}
+{% block crumbs %}<a class="crumb" href="/p/{{ project.name|urlencode }}">{{ project.name }}</a><span class="crumb">triage</span>{% endblock %}
+{% block main %}
+<h1>Needs you: {{ items|length }}</h1>
+<p class="muted">Everything still in Needs you, newest first. The line under each is your next message in that
+session: a hint only, never applied.</p>
+{% if older %}
+<form method="post" action="/p/{{ project.name|urlencode }}/triage" class="bulk">
+  <input type="hidden" name="action" value="resolve_older">
+  <button type="submit">Resolve all {{ older }} older than 14 days</button>
+</form>
+{% endif %}
+<form method="post" action="/p/{{ project.name|urlencode }}/triage">
+  <div class="bulk">
+    <button type="submit" name="action" value="resolve">Resolve selected</button>
+    <button type="submit" name="action" value="dismiss">Dismiss selected</button>
+  </div>
+  <ul class="triage">
+    {% for c in items %}
+    <li class="{% if c.older %}older{% endif %}">
+      <label>
+        <input type="checkbox" name="ids" value="{{ c.id }}">
+        <a href="{{ c.href }}">{{ c.title }}</a>
+      </label>
+      <span class="muted">{{ c.sub or project.root_name }} · {{ c.age }} ago{% if c.raised > 1 %} · raised {{ c.raised }}×{% endif %}</span>
+      {% if c.evidence %}<div class="evidence">You said next: {{ c.evidence }}</div>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</form>
+{% endblock %}

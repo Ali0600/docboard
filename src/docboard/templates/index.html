@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block main %}
+<h1>Projects</h1>
+<ul class="projects">
+  {% for p in projects %}
+  <li>
+    <a href="/p/{{ p.name|urlencode }}">{{ p.name }}</a>
+    <span class="count">{{ p.needs }} need you</span>
+    <span class="muted">{% if p.last %}synced {{ p.last.started[:16] }} ({{ p.last.status }}){% else %}never synced{% endif %}</span>
+  </li>
+  {% endfor %}
+</ul>
+{% endblock %}

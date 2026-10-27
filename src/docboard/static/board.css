@@ -1,0 +1,94 @@
+:root {
+  --bg: #f6f6f3;
+  --panel: #ffffff;
+  --ink: #1d1f21;
+  --muted: #6b6f74;
+  --line: #dddcd6;
+  --accent: #2f6fd6;
+  --needs: #c2410c;
+  --warn-bg: #fff4e5;
+  --badge: #eef1f6;
+  --moved: #6d4cc2;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15171a;
+    --panel: #1e2125;
+    --ink: #e8e8e6;
+    --muted: #9aa0a6;
+    --line: #33373d;
+    --accent: #7aa7ff;
+    --needs: #ff8a4c;
+    --warn-bg: #3a2a14;
+    --badge: #2a2f36;
+    --moved: #b79cff;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.top {
+  display: flex; gap: 12px; align-items: baseline;
+  padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+}
+.brand { font-weight: 700; color: var(--ink); }
+.crumb::before { content: "/"; margin-right: 12px; color: var(--muted); }
+main { padding: 16px; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+h2 { font-size: 14px; margin: 18px 0 8px; }
+.muted { color: var(--muted); }
+.warn { background: var(--warn-bg); padding: 6px 10px; border-radius: 6px; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0; }
+.actions form { display: inline-flex; gap: 6px; margin: 0; }
+button, .button, select, input {
+  font: inherit; color: var(--ink); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px;
+}
+button, .button { cursor: pointer; }
+button:hover, .button:hover { border-color: var(--accent); text-decoration: none; }
+details.add form { display: inline-flex; flex-wrap: wrap; gap: 6px; margin-left: 6px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 14px; }
+.chip { border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; color: var(--ink); background: var(--panel); }
+.chip.on { border-color: var(--accent); color: var(--accent); }
+.chip .n { color: var(--needs); font-weight: 600; }
+.columns { display: grid; grid-template-columns: repeat(5, minmax(220px, 1fr)); gap: 12px; align-items: start; }
+@media (max-width: 1100px) { .columns { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .columns { grid-template-columns: minmax(0, 1fr); } }
+.column { background: transparent; border-radius: 8px; padding: 4px; min-height: 80px; }
+.column.over { outline: 2px dashed var(--accent); }
+.column h2 { margin: 4px 4px 8px; }
+.column[data-column="needs_you"] h2 { color: var(--needs); }
+.card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 10px; margin-bottom: 8px; overflow-wrap: anywhere;
+}
+.card.dragging { opacity: 0.5; }
+.card.moved { border-left: 3px solid var(--moved); }
+.card .title { display: block; color: var(--ink); font-weight: 500; }
+.meta { display: flex; flex-wrap: wrap; gap: 4px 8px; color: var(--muted); font-size: 12px; margin-top: 4px; }
+.meta .sub { color: var(--ink); }
+.meta .you { color: var(--moved); }
+.badges { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
+.badge { background: var(--badge); border-radius: 4px; padding: 0 6px; font-size: 12px; }
+.children { margin: 6px 0 0; padding-left: 16px; font-size: 12px; }
+.state { color: var(--muted); }
+.move { display: flex; gap: 4px; margin-top: 6px; }
+.move select, .move button { font-size: 12px; padding: 1px 6px; }
+.folded { margin: 4px; }
+.foot { margin-top: 18px; }
+.detail { max-width: 860px; }
+.body { white-space: pre-wrap; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.evidence { color: var(--muted); font-style: italic; }
+.triage { list-style: none; padding: 0; max-width: 960px; }
+.triage li { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin-bottom: 6px; }
+.triage li.older { opacity: 0.8; }
+.bulk { display: flex; gap: 8px; margin: 8px 0; }
+.projects li { margin: 6px 0; display: flex; gap: 12px; }
+.count { color: var(--needs); }

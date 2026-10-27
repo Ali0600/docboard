@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}{{ project.name }} · docboard{% endblock %}
+{% block crumbs %}<span class="crumb">{{ project.name }}</span>{% endblock %}
+
+{% macro card_box(c, movable, back, root_name) %}
+<article class="card kind-{{ c.kind }}{% if c.moved %} moved{% endif %}" draggable="true"
+         data-card-id="{{ c.id }}" data-move-url="{{ c.href }}/move">
+  <a class="title" href="{{ c.href }}">{{ c.title }}</a>
+  <div class="meta">
+    <span class="sub">{{ c.sub or root_name }}</span>
+    <span class="why" title="why it is on this game">{{ c.sub_reason }}</span>
+    <span>{{ c.kind }}</span>
+    {% if c.age %}<span>{{ c.age }} ago</span>{% endif %}
+    {% if c.raised > 1 %}<span>raised {{ c.raised }}×</span>{% endif %}
+    {% if c.moved %}<span class="you">moved by you</span>{% endif %}
+  </div>
+  {% if c.badges %}<div class="badges">{% for b in c.badges %}<span class="badge">{{ b }}</span>{% endfor %}</div>{% endif %}
+  {% if c.child_cards %}
+  <ul class="children">
+    {% for ch in c.child_cards %}<li><a href="{{ ch.href }}">{{ ch.title }}</a> <span class="state state-{{ ch.col }}">{{ COLUMN_NAMES[ch.col] }}</span></li>{% endfor %}
+  </ul>
+  {% endif %}
+  <form class="move" method="post" action="{{ c.href }}/move">
+    <input type="hidden" name="back" value="{{ back }}">
+    <select name="col" aria-label="Move to">
+      {% for m in movable %}<option value="{{ m }}"{% if m == c.col %} selected{% endif %}>{{ COLUMN_NAMES[m] }}</option>{% endfor %}
+    </select>
+    <button type="submit">Move</button>
+  </form>
+</article>
+{% endmacro %}
+
+{% block main %}
+<section class="status">
+  <h1>{{ project.name }}</h1>
+  <p class="muted">
+    {% if last %}Last sync {{ last.started[:16].replace("T", " ") }} UTC, {{ last.status }}{% if last.ref_sha %}, docs at {{ last.ref_sha[:8] }}{% endif %}.{% else %}Not synced yet.{% endif %}
+    {% if syncing %}<strong>Refreshing from the sources: reload in a few seconds.</strong>{% endif %}
+  </p>
+  {% if last and last.status != "ok" %}<p class="warn">The last sync was refused: {{ last.message }}</p>{% endif %}
+  {% for d in degraded %}<p class="warn">Degraded: {{ d }}. PR and plan cards keep their last good state.</p>{% endfor %}
+  <div class="actions">
+    <form method="post" action="/p/{{ project.name|urlencode }}/sync">
+      <input type="hidden" name="back" value="{{ back }}">
+      <button type="submit">Sync now</button>
+    </form>
+    <a class="button" href="/p/{{ project.name|urlencode }}/triage">Triage Needs you</a>
+    <details class="add">
+      <summary>Add a card</summary>
+      <form method="post" action="/p/{{ project.name|urlencode }}/cards">
+        <input type="hidden" name="back" value="{{ back }}">
+        <input name="title" required maxlength="200" placeholder="Title" aria-label="Title">
+        <select name="col" aria-label="Column">{% for k, v in COLUMN_NAMES.items() if k != "hidden" %}<option value="{{ k }}"{% if k == "next" %} selected{% endif %}>{{ v }}</option>{% endfor %}</select>
+        <select name="sub" aria-label="Game"><option value="">{{ project.root_name }}</option>{% for s in subs %}<option value="{{ s }}"{% if s == sub %} selected{% endif %}>{{ s }}</option>{% endfor %}</select>
+        <button type="submit">Add</button>
+      </form>
+    </details>
+  </div>
+  <nav class="chips" aria-label="Games">
+    {% for chip in chips %}
+    <a class="chip{% if chip.key == sub %} on{% endif %}" href="?sub={{ chip.key|urlencode }}">{{ chip.label }}{% if chip.needs %} <span class="n">{{ chip.needs }}</span>{% endif %}</a>
+    {% endfor %}
+  </nav>
+</section>
+
+<div class="columns">
+  {% for col in columns %}
+  <section class="column" data-column="{{ col.key }}" aria-label="{{ col.name }}">
+    <h2>{{ col.name }} <span class="muted">{{ col.cards|length }}{% if col.folded %} of {{ col.total }}{% endif %}</span></h2>
+    {% for c in col.cards %}{{ card_box(c, movable, back, project.root_name) }}{% endfor %}
+    {% if col.folded %}
+    <p class="folded">
+      {% if col.key == "done" %}<a href="?sub={{ sub|urlencode }}&amp;done=all">Show all {{ col.total }}</a>
+      {% else %}<a href="?sub={{ sub|urlencode }}&amp;older=1">Older ({{ col.folded }})</a>{% endif %}
+    </p>
+    {% endif %}
+  </section>
+  {% endfor %}
+</div>
+<p class="muted foot">
+  {% if hidden %}{{ hidden }} hidden by you. {% endif %}
+  {% if gone %}{{ gone }} gone from their sources. {% endif %}
+  Cards come from the docs, PRs, plans and sessions; a move you make holds until its source changes.
+</p>
+{% endblock %}
