@@ -1,0 +1,42 @@
+[project]
+name = "docboard"
+version = "0.1.0"
+description = "A Kanban board per project, built from its own docs, PRs, plans and Claude Code sessions"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+docboard = "docboard.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11.14,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.uv]
+# Supply-chain cooldown: never resolve a release uploaded in the last 14 days.
+exclude-newer = "14 days"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.17.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# E/W/F: pycodestyle and pyflakes; I: imports; B: bugbear; UP: pyupgrade;
+# S: bandit security checks; SIM: simplifications.
+select = ["E", "W", "F", "I", "B", "UP", "S", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert, and they spawn git with fixed argv.
+"tests/**" = ["S101", "S603", "S607"]
+"src/docboard/privacy.py" = ["S607"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
