@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}{{ card.title[:60] }} · docboard{% endblock %}
+{% block crumbs %}{% if project %}<a class="crumb" href="/p/{{ project.name|urlencode }}">{{ project.name }}</a>{% endif %}<span class="crumb">card</span>{% endblock %}
+{% block main %}
+<article class="detail">
+  <h1>{{ card.title }}</h1>
+  <p class="muted">
+    {{ card.kind }} · {{ COLUMN_NAMES[card.col] }}{% if card.moved %} (moved by you; its source says {{ COLUMN_NAMES[column_derived] }}){% endif %}
+    · {{ card.sub or (project.root_name if project else "") }} ({{ card.sub_reason }})
+    {% if card.age %} · {{ card.age }} ago{% endif %}{% if card.raised > 1 %} · raised {{ card.raised }}×{% endif %}
+  </p>
+  {% if card.badges %}<div class="badges">{% for b in card.badges %}<span class="badge">{{ b }}</span>{% endfor %}</div>{% endif %}
+
+  <div class="actions">
+    <form method="post" action="{{ card.href }}/move">
+      <select name="col" aria-label="Move to">{% for m in movable %}<option value="{{ m }}"{% if m == card.col %} selected{% endif %}>{{ COLUMN_NAMES[m] }}</option>{% endfor %}</select>
+      <button type="submit">Move</button>
+    </form>
+    {% if card.col == "needs_you" %}
+    <form method="post" action="{{ card.href }}/resolve"><button type="submit">Resolve</button></form>
+    <form method="post" action="{{ card.href }}/dismiss"><button type="submit">Dismiss</button></form>
+    {% endif %}
+    {% if not card.manual %}
+    <form method="post" action="{{ card.href }}/sub">
+      <select name="sub" aria-label="Game"><option value="">{{ project.root_name if project else "root" }}</option>{% for s in subs %}<option value="{{ s }}"{% if s == card.sub %} selected{% endif %}>{{ s }}</option>{% endfor %}</select>
+      <button type="submit">Set game</button>
+    </form>
+    {% else %}
+    <form method="post" action="{{ card.href }}/delete"><button type="submit">Delete</button></form>
+    {% endif %}
+  </div>
+
+  {% if card.body %}<div class="body">{{ card.body|linkify }}</div>{% endif %}
+
+  {% if decided %}
+  <h2>Decided along the way</h2>
+  <ul>{% for d in decided %}<li>{{ d }}</li>{% endfor %}</ul>
+  {% endif %}
+
+  {% if evidence %}
+  <h2>Your next message in that session</h2>
+  <p class="evidence">{{ evidence }}</p>
+  <p class="muted">A hint only: the card stays in Needs you until you resolve or dismiss it.</p>
+  {% endif %}
+
+  {% if children %}
+  <h2>Pull requests</h2>
+  <ul>{% for ch in children %}<li><a href="{{ ch.href }}">{{ ch.title }}</a> <span class="state state-{{ ch.col }}">{{ COLUMN_NAMES[ch.col] }}</span></li>{% endfor %}</ul>
+  {% endif %}
+
+  <h2>Source</h2>
+  <ul class="source">
+    {% if source.path %}<li>{{ source.path }}{% if source.line %}:{{ source.line }}{% endif %}
+      {% if links.editor %}<a href="{{ links.editor }}">open in editor</a>{% endif %}
+      {% if links.github %}<a href="{{ links.github }}" rel="noopener noreferrer">on GitHub</a>{% endif %}</li>{% endif %}
+    {% if links.pr %}<li><a href="{{ links.pr }}" rel="noopener noreferrer">PR #{{ source.number }}</a> ({{ source.state }}, {{ source.branch }})</li>{% endif %}
+    {% if source.session %}<li>session {{ source.session }}{% if source.session_title %}: {{ source.session_title }}{% endif %}</li>{% endif %}
+    {% if source.plan_file %}<li>plan file {{ source.plan_file }}</li>{% endif %}
+    {% if card.manual %}<li>added by you</li>{% endif %}
+  </ul>
+
+  {% if events %}
+  <h2>History</h2>
+  <ul class="history">{% for e in events %}<li><span class="muted">{{ e.at[:16].replace("T", " ") }} {{ e.actor }}</span> {{ e.kind }}{% if e.detail %}: {{ e.detail }}{% endif %}</li>{% endfor %}</ul>
+  {% endif %}
+</article>
+{% endblock %}
