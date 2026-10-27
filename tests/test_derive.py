@@ -101,6 +101,19 @@ def test_a_plan_without_a_pr_list_waits_for_its_session_to_move_on(tmp_path: Pat
     assert cards(tmp_path, recs, prs)["pl:p1"].column == D.DONE
 
 
+def test_a_partly_merged_plan_leaves_in_progress_once_quiet_for_two_weeks(tmp_path: Path) -> None:
+    recs = [
+        *f.plan_approval(S, "2026-10-01T10:00:00Z", "p1", PLAN_2),
+        f.pr_link(S, 1, "2026-10-01T12:00:00Z"),
+    ]
+    merged_then = [pr(1, "merged", "2026-10-01T11:00:00Z", "2026-10-20T13:00:00Z")]
+    assert cards(tmp_path, recs, merged_then)["pl:p1"].column == D.IN_PROGRESS  # 7 days: not yet
+    quiet = [pr(1, "merged", "2026-10-01T11:00:00Z", "2026-10-02T13:00:00Z")]
+    card = cards(tmp_path, recs, quiet)["pl:p1"]
+    assert card.column == D.DONE
+    assert card.badges == ["1 of 2 PRs merged", "quiet since 2026-10-02"]
+
+
 def test_an_unapproved_plan_waits_on_the_owner(tmp_path: Path) -> None:
     recs = [
         f.tool_use(

@@ -33,6 +33,7 @@ _PLAN_PREFIX = re.compile(r"^(?:(?:DONE|DRAFT|NOW|NEXT)\s*[—–:-]\s*|Plan:\s*
 # "## PR A — …", "## PR 1: …", "## PR0 — …"; not "## PRs that landed".
 _PR_SECTION = re.compile(r"^#{2,3}\s+PR\s*[0-9A-Z]{0,3}\b", re.M)
 MERGED_LONG_AGO = timedelta(days=7)
+PLAN_QUIET = timedelta(days=14)
 _FIRST_PAREN = re.compile(r"^\s*\(([^)]*)\)")
 
 
@@ -360,7 +361,8 @@ class _Deriver:
         idle = datetime.fromtimestamp(mtime, UTC) < now - SESSION_IDLE if mtime else True
         planned = len(_PR_SECTION.findall(g.last.plan))
         merged = sum(1 for p in prs if p.state == "merged")
-        badges: list[str] = []
+        newest = max((_t(p.merged_at or p.closed_at or "") for p in prs), default=None)
+        quiet = False
         if not prs:
             column = NEXT
         elif any(p.state == "open" for p in prs):
@@ -369,18 +371,17 @@ class _Deriver:
             column = DONE  # every PR the plan named is in
         elif merged and len(prs) >= planned and (later_plan or idle):
             column = DONE  # no PR list to check: done once the session moved on or went quiet
-        elif (
-            merged
-            and len(prs) >= planned
-            and max(_t(p.merged_at or p.closed_at or "") for p in prs) < now - MERGED_LONG_AGO
-        ):
+        elif merged and len(prs) >= planned and newest < now - MERGED_LONG_AGO:
             column = DONE  # a long-lived session: nothing landed for its plan in a week
+        elif merged and newest < now - PLAN_QUIET:
+            # Part of its PR list never linked here: the rest usually landed through another
+            # session. Out of In progress, with the gap kept on the card.
+            column, quiet = DONE, True
         else:
             column = IN_PROGRESS
-        if prs:
-            badges.append(f"{merged} of {max(len(prs), planned)} PRs merged")
-        else:
-            badges.append("no PR yet")
+        badges = [f"{merged} of {max(len(prs), planned)} PRs merged"] if prs else ["no PR yet"]
+        if quiet and newest is not None:
+            badges.append(f"quiet since {newest.date().isoformat()}")
         child_ids = [ids.pr_id(p.repo, p.number) for p in prs]
         subs = {cards_by_id[c].sub for c in child_ids if c in cards_by_id}
         sub = self.att.by_text(g.title)

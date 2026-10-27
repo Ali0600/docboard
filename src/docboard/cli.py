@@ -108,16 +108,15 @@ def _diff(args: argparse.Namespace) -> int:
 
     gone = [a[i] for i in a.keys() - b.keys() if keep(a[i])]
     new = [b[i] for i in b.keys() - a.keys() if keep(b[i])]
+    both = [i for i in a.keys() & b.keys() if keep(a[i])]
     moved = Counter()
-    for i in a.keys() & b.keys():
-        if not keep(a[i]):
-            continue
+    for i in both:
         for f in ("sub", "column"):
             if a[i][f] != b[i][f]:
                 moved[f] += 1
         if a[i]["source"].get("path") != b[i]["source"].get("path"):
             moved["path"] += 1
-    print(f"only before: {len(gone)}  only after: {len(new)}  in both: {len(a.keys() & b.keys())}")
+    print(f"only before: {len(gone)}  only after: {len(new)}  in both: {len(both)}")
     print(
         "changed in both: " + ", ".join(f"{k} {v}" for k, v in sorted(moved.items()))
         if moved
