@@ -1,0 +1,28 @@
+# Copy to config/projects.toml (git-ignored) and edit. Only the projects listed here are read.
+#
+# claude_home = "~/.claude"            # where Claude Code keeps transcripts and plans
+
+# A monorepo whose directories under games/ each get a board of their own.
+[[project]]
+path = "~/projects/your-monorepo"
+# name = "your-monorepo"               # default: the folder's name
+# github = "owner/name"                # default: read from the origin remote
+# docs_ref = "origin/main"             # default: origin's default branch, else the working tree
+root_name = "Platform"                 # the board for everything not in a sub-project
+
+[project.subprojects]
+glob = "games/*"
+exclude = ["_harness"]
+name_from = "game.toml:name"           # each sub-project's display name, read from its own file
+
+# Extra names a sub-project goes by in titles (its slug and display name are always aliases).
+[project.subprojects.aliases]
+some-game = ["Some Game", "sg"]
+
+# Extra branch prefixes ("<slug>-" and "game/<slug>-" are always tried).
+[project.subprojects.branches]
+some-game = ["sg-"]
+
+# A plain repo needs nothing but its path.
+[[project]]
+path = "~/projects/your-repo"
