@@ -12,11 +12,12 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import cache
+from itertools import takewhile
 
 from docboard import ids
 from docboard.attribution import Attributor
 from docboard.docsrc import Bullet, RoadmapItem
-from docboard.ghsrc import PullRequest
+from docboard.ghsrc import RED, PullRequest, Run, decisive
 from docboard.route import Router
 from docboard.textsim import jaccard, similar
 from docboard.transcripts import PlanCall, Scan, Touch
@@ -41,7 +42,28 @@ _FIRST_PAREN = re.compile(r"^\s*\(([^)]*)\)")
 # holds a PR, such a PR and every later one belong to some later plan, not this one.
 _SERIES = re.compile(r"\bPR ?(?:0|1|A)\b")
 _NEVER = datetime.max.replace(tzinfo=UTC)
-TRANSCRIPT_KINDS = ("needs", "question", "wrap", "plan")
+TRANSCRIPT_KINDS = ("needs", "question", "wrap", "plan", "proposal")
+# Any heading that names a hand check: "## Hand check", "## For your hand check",
+# "## Feel numbers for the owner's hand check" (34 such headings in one repo's PRs).
+_HAND_CHECK = re.compile(
+    r"^(#{1,6})\s[^\n]*\bhand[- ]?checks?\b[^\n]*$", re.IGNORECASE | re.MULTILINE
+)
+_ANY_HEADING = re.compile(r"^(#{1,6})\s", re.MULTILINE)
+# CommonMark fences: an opening run of 3+ backticks (whose info string holds no backtick, so
+# "```code``` text" is inline code) or tildes, closed by a run of the same character at least as
+# long with nothing after it.
+_FENCE_OPEN = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+_FENCE_CLOSE = re.compile(r"^ {0,3}(`{3,}|~{3,})[ \t]*$")
+# The app's "Do it here" on a proposal card sends this as the owner's turn in its session.
+_DO_HERE = re.compile(r"^\s*Do this task here: [\u201c\"](.+?)[\u201d\"]")
+PROPOSAL_LIFE = timedelta(days=7)  # the app drops a proposal card not started in a week
+# The app writes a title into "Do this task here" with every quotation mark (Unicode's
+# Quotation_Mark) as ', cut at 200 characters with an ellipsis (read from its own bundle).
+_QUOTES = re.compile(
+    "[\"'\u00ab\u00bb\u2018-\u201f\u2039\u203a\u2e42\u300c-\u300f\u301d-\u301f"
+    "\ufe41-\ufe44\uff02\uff07\uff62\uff63]"
+)
+APP_TITLE_CAP = 200
 
 
 @dataclass
@@ -89,6 +111,46 @@ class Inputs:
     # Every configured project, when the scan covers them all: each transcript card then goes to
     # one board only. None: a single project's scan, every card is this project's.
     router: Router | None = None
+    milestones: dict[int, list[str]] = field(default_factory=dict)  # PR -> MILESTONES lines
+    runs: Sequence[Run] = ()  # the default branch's newest workflow runs, newest first
+    refused_runs: dict[int, bool] = field(default_factory=dict)  # red run id -> never ran
+
+
+def _unfenced(text: str) -> str:
+    """The text with every fenced code block blanked (same length, so offsets still match): a
+    `# comment` in a shell block is not a heading."""
+    out: list[str] = []
+    fence: tuple[str, int] | None = None  # (character, length) while inside a fence
+    for line in text.splitlines(keepends=True):
+        body = line.rstrip("\r\n")
+        code = fence is not None
+        if fence is None:
+            m = _FENCE_OPEN.match(body)
+            if m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
+                fence, code = (m.group(1)[0], len(m.group(1))), True
+        else:
+            m = _FENCE_CLOSE.match(body)
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= fence[1]:
+                fence = None
+        out.append("".join(c if c in "\r\n" else " " for c in line) if code else line)
+    return "".join(out)
+
+
+def hand_check(body: str) -> str:
+    """A PR description's "Hand check" section (to the next heading of its level or above),
+    headings inside code fences not counting."""
+    body = body or ""
+    plain = _unfenced(body)
+    m = _HAND_CHECK.search(plain)
+    if m is None:
+        return ""
+    level = len(m.group(1))
+    end = len(body)
+    for h in _ANY_HEADING.finditer(plain, m.end()):
+        if len(h.group(1)) <= level:
+            end = h.start()
+            break
+    return body[m.end() : end].strip()[:BODY_CAP]
 
 
 @cache
@@ -515,6 +577,10 @@ class _Deriver:
                     sub, reason = self.att.by_files(files, min_hits=1), "files"
             if not sub and reason != "repo-wide":
                 sub, reason = "", "root"
+            parts = [f"Milestones: {line}" for line in self.inp.milestones.get(pr.number, ())]
+            check = hand_check(pr.body)
+            if check:
+                parts.append("Hand check:\n" + check)
             card = Card(
                 id=cid,
                 kind="pr",
@@ -522,8 +588,10 @@ class _Deriver:
                 title=pr.title,
                 sub=sub,
                 sub_reason=reason,
+                body="\n\n".join(parts)[:BODY_CAP],
                 event_at=pr.merged_at or pr.closed_at or pr.created_at,
-                badges=["closed"] if pr.state == "closed" else [],
+                badges=(["closed"] if pr.state == "closed" else [])
+                + (["hand check listed"] if check else []),
                 source={
                     "url": pr.url,
                     "number": pr.number,
@@ -816,6 +884,98 @@ class _Deriver:
             self.tally[(self.owner[card.id][0], "wrap_asks")] += 1
             self.cards.append(card)
 
+    def proposals(self) -> None:
+        """Sessions the assistant proposed on its own, as Ideas while the proposal stands. It
+        leaves once dismissed, started (by its id, or by the owner's "Do it here") or a week old,
+        when the app drops it. A call that proposed nothing (no task id came back) is no card."""
+        scan = self.inp.scan
+        started = {  # a start by id the owner refused at its prompt started nothing
+            task
+            for tid, task in scan.started.items()
+            if getattr(scan.results.get(tid), "outcome", "") != "rejected"
+        }
+        for prop in scan.proposals.values():
+            task = scan.proposal_tasks.get(prop.id)
+            if task is None or task in scan.dismissed or task in started:
+                continue
+            at = _t(prop.ts)
+            if self.inp.now - at > PROPOSAL_LIFE or self._done_here(prop.session, at, prop.title):
+                continue
+            # The prompt's first paragraph only: a path deep in its instructions is no claim on
+            # a game or a board.
+            lead = prop.prompt.split("\n\n", 1)[0]
+            sub, reason = self._transcript_sub(prop.session, at, prop.title, lead)
+            card = Card(
+                id=ids.proposal_id(prop.id),
+                kind="proposal",
+                column=IDEAS,
+                title=prop.title,
+                sub=sub,
+                sub_reason=reason,
+                body=prop.prompt,
+                event_at=prop.ts,
+                badges=["proposed session"],
+                source={"session": prop.session, "task": task},
+            )
+            self._own(card, self._ask_owner(prop.session, at, prop.title, lead), prop.session)
+            self.cards.append(card)
+
+    def _done_here(self, session: str, at: datetime, title: str) -> bool:
+        """Whether the owner started a proposal from its card ("Do it here") in its session,
+        comparing the title as the app writes it."""
+        want = _QUOTES.sub("'", title.strip())
+        for h in self.humans.get(session, ()):
+            m = _DO_HERE.match(h.text)
+            if m is None or _t(h.ts) <= at:
+                continue
+            sent = m.group(1).strip()
+            cut = sent[:-1].rstrip() if sent.endswith("\u2026") else None
+            if sent == want or (cut and len(cut) >= APP_TITLE_CAP - 10 and want.startswith(cut)):
+                return True
+        return False
+
+    def ci(self) -> None:
+        """Each workflow whose newest run on the default branch is red is a card in In progress;
+        once a later run is green it moves to Done, dated when it turned green. Only a success
+        is green; a cancelled or skipped run says nothing. A workflow never red here has no card."""
+        by_workflow: dict[str, list[Run]] = defaultdict(list)
+        for run in decisive(self.inp.runs):  # newest first
+            by_workflow[run.workflow].append(run)
+        for workflow, runs in sorted(by_workflow.items()):
+            first_red = next((i for i, r in enumerate(runs) if r.conclusion in RED), None)
+            if first_red is None:
+                continue
+            newest = runs[0]
+            repo = newest.repo
+            if first_red == 0:
+                streak = list(takewhile(lambda r: r.conclusion in RED, runs))
+                refused = self.inp.refused_runs.get(newest.id, False)
+                badges = [f"red since {streak[-1].created_at[:10]}", f"{len(streak)} red runs"]
+                if refused:
+                    badges.append("refused before it ran (an Actions budget?), not a failing build")
+                column, event_at, title = (
+                    IN_PROGRESS,
+                    streak[-1].created_at,
+                    f"main is red: {workflow}",
+                )
+            else:
+                badges, column = ["green again"], DONE
+                event_at = runs[first_red - 1].created_at  # the run that turned it green
+                title = f"main is green again: {workflow}"
+            self.cards.append(
+                Card(
+                    id=ids.ci_id(repo, workflow),
+                    kind="ci",
+                    column=column,
+                    title=title,
+                    sub="",
+                    sub_reason="root",
+                    event_at=event_at,
+                    badges=badges,
+                    source={"run_url": newest.url, "run_id": newest.id, "workflow": workflow},
+                )
+            )
+
     def headings(self) -> None:
         for _uuid, session in self.inp.scan.empty_needs.items():
             self.tally[(self._folder(session), "needs_headings_without_items")] += 1
@@ -836,6 +996,8 @@ def derive(
     d.needs()
     d.questions()
     d.wraps()
+    d.proposals()
+    d.ci()
     d.headings()
     cards = [c for c in d.cards if c.kind not in TRANSCRIPT_KINDS or d.mine(c.id)]
     handover = {cid: owner[0] for cid, owner in d.owner.items() if owner[0] != inp.project}

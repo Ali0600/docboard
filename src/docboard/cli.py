@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import traceback
 from collections import Counter
@@ -189,6 +190,26 @@ def _report(project: config.Project, result: sync.SyncResult, report: ApplyRepor
         print(f"  DEGRADED {d} (kept the last good {', '.join(report.kept_frozen)} cards)")
 
 
+def stanza(path: Path) -> str:
+    """A config entry for a folder, valid TOML for any path: a literal string (no escapes, so a
+    Windows path reads as written) unless the path holds a single quote or a control character;
+    then a basic string with those escaped."""
+    text = str(path)
+    if "'" not in text and not _TOML_CONTROL.search(text):
+        value = f"'{text}'"
+    else:
+        value = '"' + _TOML_ESCAPE.sub(lambda m: _toml_escape(m.group()), text) + '"'
+    return f"[[project]]\npath = {value}"
+
+
+_TOML_CONTROL = re.compile("[\x00-\x08\x0a-\x1f\x7f]")  # TOML's literal strings allow a tab
+_TOML_ESCAPE = re.compile('[\x00-\x1f\x7f"\\\\]')
+
+
+def _toml_escape(ch: str) -> str:
+    return {'"': '\\"', "\\": "\\\\"}.get(ch) or f"\\u{ord(ch):04x}"
+
+
 def _board(args: argparse.Namespace) -> int:
     cfg = config.load(Path(args.config) if args.config else None)
     cwd = Path(args.cwd) if args.cwd else Path.cwd()
@@ -197,6 +218,9 @@ def _board(args: argparse.Namespace) -> int:
         names = ", ".join(p.name for p in cfg.projects)
         where, _ = paths.config_path(args.config)
         print(f"board: {cwd} is in none of the configured projects ({names}); add it to {where}")
+        top = locate.git_top(cwd)
+        if top is not None:  # the folder's own repo, nothing read from its tree
+            print(f"  as:\n{stanza(top)}")
         return 2
     project, sub = found.project, found.sub
     status = 0

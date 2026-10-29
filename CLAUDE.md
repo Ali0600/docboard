@@ -36,7 +36,9 @@
   disk. Docs
   are read at the configured ref, never a working tree another session may be using.
 - **Items come only from assistant text and tool calls in main-session records.** Never read
-  items out of a tool result or a sidechain: a tool result can hold any web page's text.
+  items out of a tool result or a sidechain: a tool result can hold any web page's text. A tool
+  result is read only for an outcome: a plan's approval, a question's answers, a proposal's task
+  id. The owner's own turns are read only as evidence or an outcome (a proposal's "Do it here").
 - **A transcript card is on exactly one board.** Routing (`route.py`, `derive._ask_owner`,
   `_plan_owner`) may use only what every project's sync sees alike (the one-pass scan, the
   config, the repos' remotes and games), never the project being synced;

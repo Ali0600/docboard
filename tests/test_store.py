@@ -540,3 +540,28 @@ def test_a_card_routed_away_moves_to_its_board_at_once(store: Store) -> None:
         1,
     )
     assert store.events("ny:1")[0]["detail"] == "moved to two: its work is there"
+
+
+def test_a_ci_outage_keeps_the_ci_card_but_not_the_prs_frozen(store: Store) -> None:
+    store.apply(result([card("ci:acme/demo#ci", "in_progress", kind="ci"),
+                        card("pr:1", "in_progress", kind="pr")]), now())  # fmt: skip
+    store.apply(result([card("pr:1", "done", kind="pr")], degraded=["ci: exit 4"]), now())
+    assert col(store, "ci:acme/demo#ci") == "in_progress"
+    assert store.card("ci:acme/demo#ci")["gone_at"] is None
+    assert col(store, "pr:1") == "done"  # the PRs were read: they follow their source
+
+
+def test_a_pr_list_failure_freezes_the_prs_but_not_main_ci(store: Store) -> None:
+    store.apply(result([card("ci:acme/demo#ci", "in_progress", kind="ci"),
+                        card("pr:1", "in_progress", kind="pr")]), now())  # fmt: skip
+    store.apply(
+        result([card("ci:acme/demo#ci", "done", kind="ci")], degraded=["gh: exit 4"]), now()
+    )
+    assert col(store, "ci:acme/demo#ci") == "done"  # the runs were read: they follow their source
+    assert col(store, "pr:1") == "in_progress" and store.card("pr:1")["gone_at"] is None
+
+
+def test_no_gh_keeps_the_ci_cards(store: Store) -> None:
+    store.apply(result([card("ci:acme/demo#ci", "in_progress", kind="ci")]), now())
+    store.apply(result([], degraded=["gh: not installed", "ci: gh not installed"]), now())
+    assert store.card("ci:acme/demo#ci")["gone_at"] is None

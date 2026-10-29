@@ -588,6 +588,8 @@ def _source_links(project: Project, github: str | None, source: dict) -> dict:
     gh = project.github or github
     if source.get("number") and gh:
         links["pr"] = f"https://github.com/{gh}/pull/{int(source['number'])}"
+    if source.get("run_id") and gh:  # built from config and the id, never a URL from a source
+        links["run"] = f"https://github.com/{gh}/actions/runs/{int(source['run_id'])}"
     path, line = source.get("path"), source.get("line")
     if path:
         root = project.path.resolve()

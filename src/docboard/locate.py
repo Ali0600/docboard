@@ -41,6 +41,12 @@ def _git_roots(cwd: Path, git: str) -> tuple[Path, Path] | None:
     return top, common.parent
 
 
+def git_top(cwd: Path, git: str | None = None) -> Path | None:
+    """The main checkout of the git repo a folder is in (a worktree's main checkout), or None."""
+    roots = _git_roots(cwd.resolve(), git or find_git())
+    return roots[1] if roots is not None else None
+
+
 def _inside(path: Path, root: Path) -> bool:
     return path == root or root in path.parents
 

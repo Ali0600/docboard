@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from docboard import paths, privacy
+from docboard import ghsrc, paths, privacy
 
 
 def _live_terms() -> list[str]:
@@ -33,6 +33,7 @@ def _isolated_data(
     monkeypatch.delenv("DOCBOARD_CONFIG", raising=False)
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.setattr(paths, "LEGACY_ROOT", None)
+    monkeypatch.setattr(ghsrc, "_DEFAULT_BRANCH", {})  # each test's fake gh names its own
     return home
 
 

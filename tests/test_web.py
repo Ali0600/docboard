@@ -722,3 +722,15 @@ def test_a_busy_background_sync_clears_its_flag(env: tuple[TestClient, Path]) ->
     finally:
         runner_mod.run_sync = original
     assert not board.syncing("demo")
+
+
+def test_a_run_link_is_built_from_the_config_never_the_source(
+    env: tuple[TestClient, Path],
+) -> None:
+    client, db = env
+    source = {"run_url": "javascript:alert(1)", "run_id": 7, "workflow": "ci"}
+    with Store(db) as s:
+        s.apply(result([card("ci:acme/demo#ci", "in_progress", kind="ci", source=source)]), now())
+    page = client.get("/i/ci:acme%2Fdemo%23ci").text
+    assert 'href="https://github.com/acme/demo/actions/runs/7"' in page
+    assert "javascript:" not in page
