@@ -14,6 +14,7 @@ from boardkit import result
 
 from docboard import cli, locate, runner
 from docboard.config import Config, Project, Subprojects
+from docboard.gitrepo import GitError
 from docboard.store import ApplyReport
 
 GIT_ENV = {
@@ -234,3 +235,20 @@ def test_board_reports_a_refused_sync_and_still_gives_the_link(
     assert code == 1
     assert "sync not stored (another sync is running)" in out
     assert "/p/demo?sub=alpha" in out  # the path's game is kept when the sync could not check it
+
+
+def test_board_prints_the_link_when_the_sync_crashes(
+    repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conf = write_config(tmp_path, repo)
+
+    def crash(c: Config, project: Project, db: Path, **kw: object) -> None:
+        raise GitError("git log HEAD: fatal: bad object")
+
+    monkeypatch.setattr(runner, "run_sync", crash)
+    code = cli.main(["board", "--config", str(conf), "--cwd", str(repo / "games" / "alpha"),
+                     "--port", str(closed_port()), "--db", str(tmp_path / "board.db")])  # fmt: skip
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "sync not stored (GitError" in out
+    assert "/p/demo?sub=alpha" in out

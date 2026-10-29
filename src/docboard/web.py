@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import threading
+import time
+import traceback
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote
@@ -91,6 +94,7 @@ class Board:
         self.hosts = {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}
         self.origins = {f"http://{h}" for h in self.hosts}
         self._syncing: set[str] = set()
+        self._threads: dict[str, threading.Thread] = {}
         self._guard = threading.Lock()
         self.subs: dict[str, list[str]] = {}
 
@@ -100,23 +104,41 @@ class Board:
     def store(self) -> Store:
         return Store(self.db_path)
 
-    def refresh_in_background(self, project: Project) -> bool:
+    def refresh_in_background(self, project: Project) -> threading.Thread | None:
+        """Starts one sync of the project unless one is already running; returns its thread."""
         with self._guard:
             if project.name in self._syncing:
-                return True
+                return None
             self._syncing.add(project.name)
 
         def work() -> None:
             try:
                 runner.run_sync(self.cfg, project, self.db_path, wait=0)
-            except (runner.Busy, FloorError, OSError, ValueError, RuntimeError):
-                pass  # the outcome is in sync_run (refused) or the next sync retries
+            except runner.Busy:
+                pass  # another sync holds the lock and stores this project's state right now
+            except FloorError as e:  # its row in sync_run is what the page shows
+                print(f"docboard: sync of {project.name} refused: {e}", file=sys.stderr)
+            except runner.SyncFailed as e:  # recorded as failed; the cause goes to the log
+                print(f"docboard: sync of {project.name} failed: {e}", file=sys.stderr)
+                traceback.print_exception(e.__cause__ or e, file=sys.stderr)
             finally:
                 with self._guard:
                     self._syncing.discard(project.name)
 
-        threading.Thread(target=work, name=f"sync-{project.name}", daemon=True).start()
-        return True
+        thread = threading.Thread(target=work, name=f"sync-{project.name}", daemon=True)
+        with self._guard:
+            self._threads[project.name] = thread
+        thread.start()
+        return thread
+
+    def join(self, timeout: float) -> bool:
+        """Waits for the background syncs started so far; True when none is still running."""
+        deadline = time.monotonic() + timeout
+        with self._guard:
+            threads = list(self._threads.values())
+        for thread in threads:
+            thread.join(max(0.0, deadline - time.monotonic()))
+        return not any(t.is_alive() for t in threads)
 
     def syncing(self, name: str) -> bool:
         with self._guard:
@@ -138,8 +160,12 @@ def _card_view(row: object, now: datetime) -> dict:
         "badges": json.loads(get("badges", "[]")),
         "raised": get("raised", 1),
         "older": bool(get("older", 0)),
-        "event_at": get("event_at") or get("created_at") or "",
-        "age": _age(get("event_at") or get("created_at") or "", now),
+        # An ask raised again counts from its latest raise.
+        "event_at": get("raised_at") or get("event_at") or get("created_at") or "",
+        "age": _age(get("raised_at") or get("event_at") or get("created_at") or "", now),
+        "reopened": bool(get("reopened_at")) and row["col"] == NEEDS_YOU,
+        "reopened_was": get("reopened_was"),
+        "source_gone": bool(get("source_gone_at")) and not get("gone_at"),
         "parent": get("parent"),
         "children": json.loads(get("children", "[]")),
         "moved": bool(get("moved", 0)),
@@ -205,6 +231,7 @@ def create_app(cfg: Config, db_path: Path = DEFAULT_DB, port: int = 8742) -> Fas
         t = now()
         with board.store() as store:
             last = store.last_run(name)
+            last_ok = store.last_run(name, ok_only=True)
             stale = (
                 last is None
                 or (t - datetime.fromisoformat(last["started"])).total_seconds() > STALE_AFTER
@@ -218,12 +245,7 @@ def create_app(cfg: Config, db_path: Path = DEFAULT_DB, port: int = 8742) -> Fas
         by_id = {c["id"]: c for c in rows}
         visible = [c for c in rows + manual if c["parent"] is None]
 
-        def chosen(c: dict) -> bool:
-            if sub == "_root":
-                return c["sub"] == ""
-            return not sub or c["sub"] == sub
-
-        in_sub = [c for c in visible if chosen(c)]
+        in_sub = [c for c in visible if _in_sub(c, sub)]
         cutoff = t - RECENT
         columns = []
         for col in COLUMNS:
@@ -250,14 +272,23 @@ def create_app(cfg: Config, db_path: Path = DEFAULT_DB, port: int = 8742) -> Fas
         back = str(request.url.path) + (("?" + request.url.query) if request.url.query else "")
         return templates.TemplateResponse(request, "board.html", {
             "project": project, "columns": columns, "chips": chips, "sub": sub, "older": older,
-            "done": done, "last": last, "syncing": board.syncing(name), "gone": gone,
-            "hidden": sum(1 for c in in_sub if c["col"] == HIDDEN), "back": back,
+            "done": done, "last": last, "last_ok": last_ok, "syncing": board.syncing(name),
+            "gone": gone, "hidden": sum(1 for c in in_sub if c["col"] == HIDDEN), "back": back,
             "movable": [*COLUMNS, HIDDEN], "subs": subs,
             "degraded": json.loads(last["degraded"]) if last else [],
+            "warnings": json.loads(last["warnings"]) if last else [],
+            "accept_cmd": runner.accept_command(name),
         })  # fmt: skip
 
+    def triage_url(name: str, sub: str = "", **extra: object) -> str:
+        query = "&".join(f"{k}={quote(str(v), safe='')}" for k, v in (("sub", sub), *extra.items())
+                         if v)  # fmt: skip
+        return f"/p/{quote(name, safe='')}/triage" + (f"?{query}" if query else "")
+
     @app.get("/p/{name}/triage", response_class=HTMLResponse)
-    def triage(request: Request, name: str) -> Response:
+    def triage(request: Request, name: str, sub: str = "", select: str = "", confirm: str = "",
+               undone: str = "", kept: str = "") -> Response:  # fmt: skip
+        undone_n, kept_n = _count(undone), _count(kept)  # numbers only: a link sets these
         project = board.project(name)
         if project is None:
             return not_found("project")
@@ -265,34 +296,51 @@ def create_app(cfg: Config, db_path: Path = DEFAULT_DB, port: int = 8742) -> Fas
         with board.store() as store:
             rows = [r for r in store.cards(name) if r["col"] == NEEDS_YOU]
             items = []
-            for r in sorted(rows, key=lambda r: r["event_at"], reverse=True):
+            for r in sorted(rows, key=lambda r: r["raised_at"] or r["event_at"], reverse=True):
                 view = _card_view(r, t)
                 view["evidence"] = r["evidence"]
-                items.append(view)
+                if _in_sub(view, sub):
+                    items.append(view)
+            batch = store.last_batch(name)
+            batch_cards = (
+                [_card_view(r, t) for r in store.batch_cards(batch["id"])] if batch else []
+            )
+            subs, _ = store.known(name)
+        older = [i for i in items if i["older"]]
         return templates.TemplateResponse(request, "triage.html", {
-            "project": project, "items": items, "older": sum(1 for i in items if i["older"]),
+            "project": project, "items": items, "older": len(older), "sub": sub, "subs": subs,
+            "select_all": select == "all",
+            "confirm_items": older if confirm == "older" and older else None,
+            "batch": batch, "batch_cards": batch_cards, "undone": undone_n, "kept": kept_n or 0,
+            "url": lambda **kw: triage_url(name, **kw),
         })  # fmt: skip
 
     @app.post("/p/{name}/triage")
-    def triage_post(
-        name: str, action: str = Form(...), ids: list[str] = Form(default=[])
-    ) -> Response:  # noqa: B008
+    def triage_post(name: str, action: str = Form(...), ids: list[str] = Form(default=[]),
+                    sub: str = Form(default="")) -> Response:  # fmt: skip
         project = board.project(name)
         if project is None:
             return not_found("project")
-        t = now().isoformat()
+        if action == "resolve_older":
+            # One click never resolves dozens of cards: the confirm page lists exactly which.
+            return RedirectResponse(triage_url(name, sub, confirm="older"), 303)
+        if action not in ("resolve", "dismiss"):
+            return PlainTextResponse("Unknown action.", 400)
+        col = DONE if action == "resolve" else HIDDEN
         with board.store() as store:
-            if action == "resolve_older":
-                ids = [r["id"] for r in store.cards(name) if r["col"] == NEEDS_YOU and r["older"]]
-                action = "resolve"
-            if action not in ("resolve", "dismiss"):
-                return PlainTextResponse("Unknown action.", 400)
-            for card_id in ids:
-                card = store.card(card_id)
-                if card is None or card["project"] != name:
-                    continue
-                (store.resolve if action == "resolve" else store.dismiss)(card_id, t)
-        return RedirectResponse(f"/p/{quote(name, safe='')}/triage", 303)
+            store.move_batch(name, ids, col, action, now().isoformat())
+        return RedirectResponse(triage_url(name, sub), 303)
+
+    @app.post("/p/{name}/triage/undo")
+    def triage_undo(name: str, batch: str = Form(...), sub: str = Form(default="")) -> Response:
+        if board.project(name) is None:
+            return not_found("project")
+        with board.store() as store:
+            try:
+                restored, kept = store.undo_batch(batch, name, now().isoformat())
+            except StoreError as e:
+                return PlainTextResponse(str(e), 400)
+        return RedirectResponse(triage_url(name, sub, undone=str(restored), kept=str(kept)), 303)
 
     @app.post("/p/{name}/sync")
     def sync_now(name: str, back: str = Form(default="")) -> Response:
@@ -410,6 +458,18 @@ class _ManualRow:
         if k == "col":
             return self._d["col"]
         return self._d[k]
+
+
+def _count(value: str) -> int | None:
+    """A count from a query parameter, or None for anything that is not one."""
+    return int(value) if value.isdigit() and len(value) < 7 else None
+
+
+def _in_sub(card: dict, sub: str) -> bool:
+    """Whether a card shows under the chosen game ("" = all, "_root" = the project's root)."""
+    if sub == "_root":
+        return card["sub"] == ""
+    return not sub or card["sub"] == sub
 
 
 def _needs(cards: list[dict]) -> int:

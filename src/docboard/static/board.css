@@ -92,3 +92,8 @@ details.add form { display: inline-flex; flex-wrap: wrap; gap: 6px; margin-left:
 .bulk { display: flex; gap: 8px; margin: 8px 0; }
 .projects li { margin: 6px 0; display: flex; gap: 12px; }
 .count { color: var(--needs); }
+.badge.flag { background: var(--warn-bg); font-weight: 600; }
+.notice { background: var(--badge); padding: 6px 10px; border-radius: 6px; }
+.batch, .confirm { border: 1px solid var(--line, #8884); border-radius: 8px; padding: 8px 12px; margin: 12px 0; }
+.warnings summary { cursor: pointer; }
+code { font-size: 12px; overflow-wrap: anywhere; }

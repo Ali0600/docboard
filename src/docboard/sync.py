@@ -35,18 +35,24 @@ class SyncResult:
     cards: list[Card]
     warnings: list[str] = field(default_factory=list)
     degraded: list[str] = field(default_factory=list)
+    sub_names: dict[str, str] = field(default_factory=dict)  # slug → the game's own name
+    # Every session whose transcript was read: an open ask whose session is missing was cleaned
+    # up, not answered. Kept out of the JSON file, which is per card.
+    sessions: set[str] = field(default_factory=set)
 
     def to_json(self) -> dict:
-        data = {k: v for k, v in self.__dict__.items() if k != "cards"}
+        data = {k: v for k, v in self.__dict__.items() if k not in ("cards", "sessions")}
         data["version"] = JSON_VERSION
         data["cards"] = [c.to_json() for c in self.cards]
         return data
 
 
-def _subprojects(repo: Repo, project: Project, warnings: list[str]) -> Attributor:
+def _subprojects(
+    repo: Repo, project: Project, warnings: list[str]
+) -> tuple[Attributor, dict[str, str]]:
     sp = project.subprojects
     if sp is None:
-        return Attributor(parent="")
+        return Attributor(parent=""), {}
     slugs = [d for d in repo.dirs(sp.parent) if d not in sp.exclude]
     names: dict[str, str] = {}
     if sp.name_from:
@@ -62,7 +68,7 @@ def _subprojects(repo: Repo, project: Project, warnings: list[str]) -> Attributo
                 continue
             if isinstance(value, str):
                 names[slug] = value
-    return Attributor.build(sp.parent, slugs, names, sp.aliases, sp.branches)
+    return Attributor.build(sp.parent, slugs, names, sp.aliases, sp.branches), names
 
 
 def collect(cfg: Config, project: Project, now: datetime, gh: str | None = None) -> SyncResult:
@@ -72,7 +78,7 @@ def collect(cfg: Config, project: Project, now: datetime, gh: str | None = None)
     t0 = time.monotonic()
     repo = Repo.open(project.path, project.docs_ref)
     github = project.github or repo.github_slug()
-    att = _subprojects(repo, project, warnings)
+    att, names = _subprojects(repo, project, warnings)
 
     doc_roots = [DocFile("docs/DECISIONS.md", "")]
     roadmaps = [DocFile("ROADMAP.md", ""), DocFile("docs/ROADMAP.md", "")]
@@ -142,6 +148,7 @@ def collect(cfg: Config, project: Project, now: datetime, gh: str | None = None)
         "transcript_foreign": scan.foreign,
         "transcript_long_lines": scan.skipped_long,
         "transcript_parse_errors": scan.parse_errors,
+        "transcript_unreadable": scan.unreadable,
         "plan_calls": len(scan.plans),
         "plan_cards": sum(1 for c in cards if c.kind == "plan"),
         "needs_items": len(scan.needs),
@@ -153,6 +160,8 @@ def collect(cfg: Config, project: Project, now: datetime, gh: str | None = None)
     }
     if scan.parse_errors:
         warnings.append(f"{scan.parse_errors} transcript lines were not JSON")
+    if scan.unreadable:
+        warnings.append(f"{scan.unreadable} transcript files could not be read (deleted mid-scan?)")
     if scan.empty_needs:
         warnings.append(
             f"{len(scan.empty_needs)} 'Needs you' headings had no items in a known shape"
@@ -171,23 +180,41 @@ def collect(cfg: Config, project: Project, now: datetime, gh: str | None = None)
         cards=cards,
         warnings=warnings,
         degraded=degraded,
+        sub_names=names,
+        sessions=set(scan.session_mtime),
     )
 
 
 # Sources that never shrink to nothing in a working project; a drop means a parser broke.
 FLOOR_KEYS = ("backlog", "prs_merged", "transcript_files", "plan_calls", "needs_items")
+# Counts that come from gh: while gh is down they are zero for want of an answer, not because
+# a parser broke, so a degraded sync skips them (and its PR and plan cards stay frozen).
+GH_FLOOR_KEYS = ("prs_merged",)
+
+
+def gh_degraded(degraded: list[str]) -> bool:
+    return any(d.startswith("gh") for d in degraded)
+
+
+def floor_drops(
+    current: dict[str, int], baseline: dict[str, int], skip: tuple[str, ...] = ()
+) -> dict[str, str]:
+    """Each count that fell to zero, or by more than half, since the baseline: key → why."""
+    drops = {}
+    for key in FLOOR_KEYS:
+        if key in skip or key not in baseline:
+            continue
+        before, now = baseline[key], current.get(key, 0)
+        if before > 0 and now == 0:
+            drops[key] = f"{key}: {before} → 0"
+        elif before >= 4 and now < before / 2:
+            drops[key] = f"{key}: {before} → {now} (more than half gone)"
+    return drops
 
 
 def floor_problems(current: dict[str, int], baseline: dict[str, int]) -> list[str]:
     """A count that fell to zero, or by more than half, since the baseline."""
-    problems = []
-    for key in FLOOR_KEYS:
-        before, now = baseline.get(key, 0), current.get(key, 0)
-        if before > 0 and now == 0:
-            problems.append(f"{key}: {before} → 0")
-        elif before >= 4 and now < before / 2:
-            problems.append(f"{key}: {before} → {now} (more than half gone)")
-    return problems
+    return list(floor_drops(current, baseline).values())
 
 
 def write_json(result: SyncResult, path: Path) -> None:

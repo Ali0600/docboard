@@ -25,6 +25,47 @@
   `uv tool install` with absolute paths, `PATH`, `HOME` and `LANG` set, proved under `env -i`,
   nothing under `~/Documents`.
 
+## 2026-10-28 — A sync the board can trust, and an undo before triage
+
+The survey after the rollout found the board could go stale without a word: with gh down every
+sync was refused (the collapse check ran before the gh freeze), a crash was swallowed by the
+page's thread and retried on every view, and one broken project stopped `docboard sync`. Triage's
+"Resolve all older" moved 109 cards in one click with no way back.
+- **A real drop is accepted by a command, `docboard sync --accept-drop --project p`:** *chosen*
+  by the owner. The refused banner names what dropped and gives the command; only the drops the
+  last refusal named are accepted, so accepting one never accepts another.
+  - **Also a button on the refused banner:** *rejected* by the owner: one click could make a
+    parser bug the new normal.
+- **A raise after the owner resolved a card reopens it in Needs you,** badged, its age and Older
+  fold counted from the latest raise: *chosen* by the owner (sessions re-raise only when
+  something changed).
+  - **Keep it Done with a badge:** *rejected*: the change would show only to someone reading Done.
+- **A card id another board holds is adopted once that board stops deriving it** (the row moves,
+  with the owner's moves and history; until then the newcomer reports it as "elsewhere"):
+  *chosen*, ahead of cards following their files between boards. Transcript ids are global by
+  design, `/i/<id>` links stay valid, and no five-table rebuild touches the live database. The
+  first holder keeps an id while it still derives it, so any number of boards that derive one id
+  never trade it (the review found three nested boards could under an earlier rule).
+  - **Key cards by (project, id):** *rejected* for those reasons; a PR two nested projects both
+    derive shows on one board with a warning instead.
+- **Every schema change of the run in one migration:** *chosen*, so the owner's running page is
+  restarted once, not once per PR.
+- **Undo by batch** (each card's move before and after kept in `batch_item`; undo restores only
+  cards nothing moved since): *chosen*.
+  - **Undo every event with the batch's timestamp:** *rejected*: it cannot put back a move the
+    owner had made before the batch.
+  - **A script confirm dialog:** *rejected*: the confirm is a page listing the cards, which works
+    with no script under the Content-Security-Policy.
+- A crash is a `failed` run (its type and first line, paths shown as names, never a traceback),
+  which also restarts the page's two-minute wait, so a broken source is not resynced on every view.
+- A known limit: an ask raised in one session and again in another becomes two cards once the
+  first session's transcript is deleted (the kept-open first card, and a new one from the second
+  session). Rare (it needs a 30-day-old transcript and a later re-raise); resolving either clears
+  it.
+
+Revisit hook: `Store.apply` (`_baseline`, `floor_drops`), `runner.run_sync`, `Store.move_batch` and
+`undo_batch`.
+
 ## 2026-10-27 — The rollout: `/board`, docboard on its own board, and the cut-over at once
 
 The board worked by hand (`docboard serve`); what remained was a way in from any session and

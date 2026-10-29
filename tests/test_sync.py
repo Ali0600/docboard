@@ -6,9 +6,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import factories as f
+import pytest
+from boardkit import COUNTS
+from boardkit import result as kit_result
 
-from docboard import sync
+from docboard import cli, ghsrc, runner, sync
 from docboard.config import Config, Project, Subprojects
+from docboard.store import Store
 from docboard.transcripts import encode_path
 
 NOW = datetime(2026, 10, 27, 12, 0, tzinfo=UTC)
@@ -132,3 +136,169 @@ def test_the_json_file_is_private(tmp_path: Path) -> None:
     out = tmp_path / "out" / "board.json"
     sync.write_json(run(tmp_path, repo), out)
     assert oct(out.stat().st_mode & 0o777) == "0o600"
+
+
+# --- PR A: a sync you can trust ------------------------------------------------------------
+
+MERGED = (
+    '[{"number": 1, "title": "x", "state": "MERGED", "createdAt": "2026-10-20T00:00:00Z",'
+    ' "mergedAt": "2026-10-21T00:00:00Z", "closedAt": null, "headRefName": "b"}]'
+)
+
+
+def fake_gh(path: Path, script: str) -> Path:
+    path.write_text("#!/bin/sh\n" + script + "\n")
+    path.chmod(0o755)
+    return path
+
+
+def gh_project(tmp_path: Path, repo: Path) -> tuple[Config, Project]:
+    project = Project(name="demo", path=repo, docs_ref="HEAD", github="acme/demo")
+    return Config(projects=(project,), claude_home=tmp_path / "claude"), project
+
+
+def test_gh_failing_after_a_good_sync_keeps_the_board_syncing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = make_repo(tmp_path, {"docs/DECISIONS.md": BACKLOG})
+    cfg, project = gh_project(tmp_path, repo)
+    db = tmp_path / "data" / "board.db"
+    good = fake_gh(tmp_path / "gh-good", f"cat <<'J'\n{MERGED}\nJ")
+    monkeypatch.setattr(ghsrc, "find_gh", lambda: str(good))
+    runner.run_sync(cfg, project, db, now=NOW)
+    rec = dict(
+        f.assistant_text("s1", "a1", "2026-10-27T10:00:00Z", f.needs_block("Do — x")),
+        cwd=str(repo),
+    )
+    f.write(tmp_path / "claude" / "projects" / encode_path(repo) / "s1.jsonl", [rec])
+    bad = fake_gh(tmp_path / "gh-bad", "echo 'auth: keychain locked' >&2; exit 4")
+    monkeypatch.setattr(ghsrc, "find_gh", lambda: str(bad))
+    runner.run_sync(cfg, project, db, now=NOW)
+    with Store(db) as s:
+        assert s.last_run("demo")["status"] == "ok"
+        assert s.card("ny:a1:1") is not None  # the new ask arrived while gh was down
+        assert s.card("pr:acme/demo#1")["gone_at"] is None
+
+
+def test_a_hung_gh_degrades(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = make_repo(tmp_path, {"docs/DECISIONS.md": BACKLOG})
+    cfg, project = gh_project(tmp_path, repo)
+    monkeypatch.setattr(ghsrc, "TIMEOUT", 0.3)
+    hung = fake_gh(tmp_path / "gh", "exec sleep 5")
+    got = sync.collect(cfg, project, NOW, gh=str(hung))
+    assert got.degraded and "timed out" in got.degraded[0]
+
+
+def test_gh_output_that_is_not_json_degrades(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path, {"docs/DECISIONS.md": BACKLOG})
+    cfg, project = gh_project(tmp_path, repo)
+    chatty = fake_gh(tmp_path / "gh", "echo 'Welcome to gh! A new release is out.'")
+    got = sync.collect(cfg, project, NOW, gh=str(chatty))
+    assert got.degraded and "not the expected JSON" in got.degraded[0]
+
+
+def test_a_folder_that_is_not_git_is_recorded_as_failed(tmp_path: Path) -> None:
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    project = Project(name="demo", path=plain)
+    cfg = Config(projects=(project,), claude_home=tmp_path / "claude")
+    db = tmp_path / "data" / "board.db"
+    with pytest.raises(runner.SyncFailed):
+        runner.run_sync(cfg, project, db, now=NOW)
+    with Store(db) as s:
+        run = s.last_run("demo")
+    assert run["status"] == "failed" and run["message"].startswith("GitError:")
+    assert "Traceback" not in run["message"] and str(tmp_path) not in run["message"]
+
+
+def test_a_crash_inside_apply_writes_only_a_failed_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = make_repo(tmp_path, {"docs/DECISIONS.md": BACKLOG})
+    project = Project(name="demo", path=repo, docs_ref="HEAD")
+    cfg = Config(projects=(project,), claude_home=tmp_path / "claude")
+    db = tmp_path / "data" / "board.db"
+    runner.run_sync(cfg, project, db, now=NOW)
+    with Store(db) as s:
+        before = {c["id"]: c["title"] for c in s.cards("demo")}
+
+    def boom(self: Store, *args: object, **kw: object) -> None:
+        self.db.execute("UPDATE card SET title = 'half-written'")
+        raise KeyError("column")
+
+    monkeypatch.setattr(Store, "_apply", boom)
+    with pytest.raises(runner.SyncFailed, match="KeyError"):
+        runner.run_sync(cfg, project, db, now=NOW)
+    with Store(db) as s:
+        assert [r[0] for r in s.db.execute("SELECT status FROM sync_run ORDER BY id")] == [
+            "ok", "failed",
+        ]  # fmt: skip
+        assert {c["id"]: c["title"] for c in s.cards("demo")} == before  # rolled back
+
+
+def two_projects(tmp_path: Path) -> Path:
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    repo = make_repo(tmp_path, {"docs/DECISIONS.md": BACKLOG})
+    conf = tmp_path / "projects.toml"
+    conf.write_text(
+        f'claude_home = "{tmp_path / "claude"}"\n\n'
+        f'[[project]]\nname = "broken"\npath = "{plain}"\n\n'
+        f'[[project]]\nname = "demo"\npath = "{repo}"\ndocs_ref = "HEAD"\n',
+        encoding="utf-8",
+    )
+    return conf
+
+
+def test_sync_goes_on_past_a_broken_project_and_exits_1(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conf = two_projects(tmp_path)
+    code = cli.main(["sync", "--config", str(conf), "--db", str(tmp_path / "board.db")])
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "broken: FAILED" in out and "GitError" in out
+    assert "demo: 2 cards" in out  # the next project still synced
+
+
+def test_accept_drop_needs_a_project(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    conf = two_projects(tmp_path)
+    db = str(tmp_path / "board.db")
+    assert cli.main(["sync", "--accept-drop", "--config", str(conf), "--db", db]) == 2
+    dry = ["sync", "--accept-drop", "--dry-run", "--project", "demo", "--config", str(conf)]
+    assert cli.main(dry) == 2
+    assert "--accept-drop" in capsys.readouterr().err
+
+
+def test_sync_accept_drop_stores_the_drop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conf = two_projects(tmp_path)
+    db = str(tmp_path / "board.db")
+    small = {**COUNTS, "backlog": 3}
+    runs = iter([kit_result([]), kit_result([], small), kit_result([], small)])
+    monkeypatch.setattr(runner, "collect", lambda cfg, project, now: next(runs))
+    args = ["sync", "--project", "demo", "--config", str(conf), "--db", db]
+    assert cli.main(args) == 0
+    assert cli.main(args) == 1
+    out = capsys.readouterr().out
+    assert "REFUSED" in out and "--accept-drop --project demo" in out
+    assert cli.main([*args, "--accept-drop"]) == 0
+    assert "ACCEPTED backlog: 10 → 3" in capsys.readouterr().out
+
+
+def test_describe_names_the_project_not_its_path(tmp_path: Path) -> None:
+    project = Project(name="demo", path=tmp_path / "repo")
+    home = Path.home()
+    e = OSError(f"cannot read {tmp_path / 'repo' / 'x'} or {home / 'y'}\nsecond line")
+    text = runner.describe(e, project)
+    assert text == "OSError: cannot read demo/x or ~/y"
+
+
+def test_dry_run_goes_on_past_a_broken_project(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conf = two_projects(tmp_path)
+    assert cli.main(["sync", "--dry-run", "--config", str(conf)]) == 1
+    out = capsys.readouterr().out
+    assert "broken: FAILED" in out and "demo: docs at" in out

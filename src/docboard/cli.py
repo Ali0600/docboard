@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import traceback
 from collections import Counter
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -32,13 +33,25 @@ def _gb(n: int) -> str:
 
 
 def _sync(args: argparse.Namespace) -> int:
+    if args.accept_drop and (args.dry_run or not args.project):
+        print(
+            "sync: --accept-drop stores one project's sync: give --project, without --dry-run",
+            file=sys.stderr,
+        )
+        return 2
     if not args.dry_run:
         return _sync_store(args)
     cfg = config.load(Path(args.config) if args.config else None)
     projects = [cfg.project(args.project)] if args.project else list(cfg.projects)
     status = 0
     for project in projects:
-        result = sync.collect(cfg, project, datetime.now(UTC))
+        try:
+            result = sync.collect(cfg, project, datetime.now(UTC))
+        except Exception as e:  # one broken project never stops the others
+            print(f"{project.name}: FAILED: {runner.describe(e, project)}")
+            traceback.print_exc()
+            status = 1
+            continue
         c, t = result.counts, result.timings
         ref = f"{result.ref} ({(result.ref_sha or '')[:8]})" if result.ref else "the working tree"
         print(f"{result.project}: docs at {ref}, GitHub {result.github or '-'}")
@@ -94,13 +107,19 @@ def _sync_store(args: argparse.Namespace) -> int:
     status = 0
     for project in projects:
         try:
-            result, report = runner.run_sync(cfg, project, db)
+            result, report = runner.run_sync(cfg, project, db, accept_drop=args.accept_drop)
         except FloorError as e:
             print(f"{project.name}: REFUSED, nothing written: {e}")
+            print(f"  if the drop is real, accept it: {runner.accept_command(project.name)}")
             status = 1
             continue
         except runner.Busy as e:
             print(f"{project.name}: {e}")
+            status = 1
+            continue
+        except runner.SyncFailed as e:
+            print(f"{project.name}: FAILED, nothing written: {e}")
+            traceback.print_exception(e.__cause__ or e, file=sys.stderr)
             status = 1
             continue
         _report(project, result, report)
@@ -109,10 +128,20 @@ def _sync_store(args: argparse.Namespace) -> int:
 
 def _report(project: config.Project, result: sync.SyncResult, report: ApplyReport) -> None:
     print(
-        f"{project.name}: {len(result.cards)} cards in {result.timings['total']:.1f} s;"
+        f"{project.name}: {len(result.cards)} cards in {result.timings.get('total', 0):.1f} s;"
         f" {report.added} new, {report.updated} updated, {report.gone} gone,"
         f" {report.renamed} renamed, {report.followed_source} moves dropped (source changed)"
     )
+    for a in report.accepted:
+        print(f"  ACCEPTED {a}: the new baseline")
+    if report.reopened:
+        print(f"  {report.reopened} reopened: raised again after you resolved them")
+    if report.adopted:
+        print(f"  {report.adopted} moved here from another board")
+    if report.kept_open:
+        print(f"  {report.kept_open} open asks kept although their transcript is gone")
+    for w in report.warnings():
+        print(f"  warning: {w}")
     for d in result.degraded:
         print(f"  DEGRADED {d} (kept the last good {', '.join(report.kept_frozen)} cards)")
 
@@ -132,8 +161,15 @@ def _board(args: argparse.Namespace) -> int:
         db = Path(args.db) if args.db else DEFAULT_DB
         try:
             result, report = runner.run_sync(cfg, project, db)
-        except (FloorError, runner.Busy) as e:
+        except (FloorError, runner.Busy, runner.SyncFailed) as e:
             print(f"{project.name}: sync not stored ({e}); the board shows the last good one")
+            if isinstance(e, FloorError):
+                print(f"  if the drop is real, accept it: {runner.accept_command(project.name)}")
+            status = 1
+        except Exception as e:  # the link is printed whatever the sync did
+            print(f"{project.name}: sync not stored ({runner.describe(e, project)});"
+                  " the board shows the last good one")  # fmt: skip
+            traceback.print_exc()
             status = 1
         else:
             _report(project, result, report)
@@ -233,6 +269,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--sample", type=int, default=0, help="print this many recent cards per column")
     s.add_argument("--baseline", help="a previous --json file: fail if a source collapsed since")
     s.add_argument("--db", help="the board's database (default: data/board.db)")
+    s.add_argument(
+        "--accept-drop",
+        action="store_true",
+        help="store a sync the floor refused because a source really shrank (needs --project)",
+    )
     s.set_defaults(func=_sync)
 
     v = sub.add_parser("serve", help="the board's page on the loopback address")

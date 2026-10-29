@@ -123,6 +123,7 @@ class Scan:
     foreign: int = 0
     skipped_long: int = 0
     parse_errors: int = 0
+    unreadable: int = 0  # files that vanished or could not be opened mid-scan
     empty_needs: set[str] = field(default_factory=set)  # message uuids: a heading with no items
     pr_links: dict[tuple[str, str, int], PrLink] = field(default_factory=dict)
     plans: dict[str, PlanCall] = field(default_factory=dict)
@@ -437,8 +438,13 @@ def scan_file(path: Path, root: Path, scan: Scan) -> None:
 def scan_project(root: Path, transcripts_dir: Path) -> Scan:
     scan = Scan()
     for path, must_prove in session_files(root, transcripts_dir):
-        if must_prove and not belongs(path, root):
-            scan.foreign += 1
-            continue
-        scan_file(path, root, scan)
+        try:
+            if must_prove and not belongs(path, root):
+                scan.foreign += 1
+                continue
+            scan_file(path, root, scan)
+        except OSError:
+            # Deleted between the listing and the read (Claude Code's cleanup), or unreadable:
+            # counted, and the transcript_files floor still catches a mass loss.
+            scan.unreadable += 1
     return scan
