@@ -127,8 +127,10 @@ has older code than the checkout, so it needs a restart.
   home-folder paths naming a real user (macOS, Linux or Windows, also as JSON writes them), email
   addresses outside placeholder domains, and the terms in the data folder's
   `private-identifiers.txt`. A pre-push hook (`.githooks/pre-push`) scans what a push carries
-  (every added line, message, author address and branch name) and refuses without the terms; CI
-  scans a PR's commits and its title and body for paths and addresses. Test fixtures are synthetic.
+  (every added line and file name, a merge's own lines, messages, tags, author addresses and
+  branch names) and refuses without the terms; CI's `privacy` workflow scans a PR's commits and its
+  title and body for paths and addresses, again whenever the text is edited. Test fixtures are
+  synthetic.
 - Dependencies resolve only to releases uploaded at least 14 days ago (`[tool.uv] exclude-newer`);
   Dependabot proposes updates weekly with the same 14-day cooldown.
 - Decisions: [docs/DECISIONS.md](docs/DECISIONS.md). Gotchas met on the way:
@@ -143,7 +145,7 @@ has older code than the checkout, so it needs a restart.
 - An idempotent sources-to-cards derivation with content-derived, versioned ids. A test moves a doc
   from the root into a sub-project and proves all of its cards keep their ids; a routing test
   proves every session card lands on exactly one of the configured boards.
-- Guards each proven by a test that failed first (about 120 tests added over six PRs, each PR's
+- Guards each proven by a test that failed first (about 210 tests added over five PRs, each PR's
   red run in its description), among them the id rule, the collapse floor that writes nothing,
   a gh outage that freezes PRs instead of refusing the sync, and the page's Host and same-origin
   checks.

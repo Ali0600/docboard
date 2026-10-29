@@ -245,9 +245,9 @@ def two_projects(tmp_path: Path) -> Path:
     repo = make_repo(tmp_path, {"docs/DECISIONS.md": BACKLOG})
     conf = tmp_path / "projects.toml"
     conf.write_text(
-        f'claude_home = "{tmp_path / "claude"}"\n\n'
-        f'[[project]]\nname = "broken"\npath = "{plain}"\n\n'
-        f'[[project]]\nname = "demo"\npath = "{repo}"\ndocs_ref = "HEAD"\n',
+        f"claude_home = '{tmp_path / 'claude'}'\n\n"
+        f"[[project]]\nname = \"broken\"\npath = '{plain}'\n\n"
+        f'[[project]]\nname = "demo"\npath = \'{repo}\'\ndocs_ref = "HEAD"\n',
         encoding="utf-8",
     )
     return conf

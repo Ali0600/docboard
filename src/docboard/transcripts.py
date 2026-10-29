@@ -40,6 +40,18 @@ def _norm(path: str, windows: bool) -> str:
     return path.replace("\\", "/").casefold() if windows else path
 
 
+def _cut(path: str, folded: int, windows: bool) -> int:
+    """Where a prefix ends in the original path when it is `folded` characters long case-folded
+    (on Windows a letter may fold to two: "ß" to "ss")."""
+    if not windows:
+        return folded
+    end = n = 0
+    while n < folded and end < len(path):
+        n += len(path[end].casefold())
+        end += 1
+    return end
+
+
 def _spellings_of(root: str, windows: bool) -> set[str]:
     """How a root may be written in a transcript: as is, and on Windows with "/" and with the
     drive letter in either case."""
@@ -174,7 +186,7 @@ class Roots:
         slashed = path.replace("\\", "/") if self.windows else path
         for sp, name in self._deepest:
             if np.startswith(sp + "/"):
-                return name, slashed[len(sp) + 1 :]
+                return name, slashed[_cut(slashed, len(sp), self.windows) + 1 :]
         return None
 
     def inside(self, path: str, name: str) -> bool:

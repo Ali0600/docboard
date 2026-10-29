@@ -37,7 +37,7 @@ def test_data_dir_per_platform(tmp_path: Path) -> None:
     assert (
         paths.data_dir({}, "darwin", home) == home / "Library" / "Application Support" / "docboard"
     )
-    local = str(tmp_path / "AppData" / "Local")
+    local = str(tmp_path / "elsewhere" / "Local")  # not the fallback, so the variable is read
     assert paths.data_dir({"LOCALAPPDATA": local}, "win32", home) == Path(local) / "docboard"
     assert paths.data_dir({}, "win32", home) == home / "AppData" / "Local" / "docboard"
     xdg = str(tmp_path / "xdg")
@@ -86,7 +86,7 @@ def test_old_checkout_board_is_refused_not_replaced(
     Store(old / "data" / "board.db").close()
     monkeypatch.setattr(paths, "LEGACY_ROOT", old)
     conf = tmp_path / "p.toml"
-    conf.write_text(f'[[project]]\npath = "{tmp_path}"\n', encoding="utf-8")
+    conf.write_text(f"[[project]]\npath = '{tmp_path}'\n", encoding="utf-8")
     assert cli.main(["sync", "--config", str(conf)]) == 2
     assert "move-data" in capsys.readouterr().err
     assert not paths.db_path().exists()
@@ -94,7 +94,7 @@ def test_old_checkout_board_is_refused_not_replaced(
 
 def test_serve_refuses_a_missing_db(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     conf = tmp_path / "p.toml"
-    conf.write_text(f'[[project]]\npath = "{tmp_path}"\n', encoding="utf-8")
+    conf.write_text(f"[[project]]\npath = '{tmp_path}'\n", encoding="utf-8")
     assert cli.main(["serve", "--config", str(conf)]) == 2
     assert "no board at" in capsys.readouterr().err
 
@@ -244,6 +244,12 @@ def test_a_sibling_folder_is_outside_on_windows() -> None:
     roots = T.Roots({"demo": [str(WIN_ROOT)]}, windows=True)
     assert roots.owner(str(WIN_ROOT) + "-x\\f.py") is None
     assert roots.inside(str(WIN_ROOT).upper(), "demo")
+
+
+def test_a_root_whose_case_folds_longer_keeps_the_whole_relative_path() -> None:
+    roots = T.Roots({"demo": ["D:\\Maße\\proj"]}, windows=True)  # "ß" folds to "ss"
+    assert roots.owner("D:\\Maße\\proj\\src\\a.py") == ("demo", "src/a.py")
+    assert roots.owner("d:/MASSE/proj/src/a.py") == ("demo", "src/a.py")
 
 
 def test_a_notebook_touch_passes_the_prefilter(tmp_path: Path) -> None:
@@ -408,7 +414,7 @@ def test_board_says_restart_when_the_page_runs_other_code(
     repo = tmp_path / "demo"
     repo.mkdir()
     conf = tmp_path / "p.toml"
-    conf.write_text(f'[[project]]\npath = "{repo}"\nname = "demo"\n', encoding="utf-8")
+    conf.write_text(f"[[project]]\npath = '{repo}'\nname = \"demo\"\n", encoding="utf-8")
     code = cli.main(["board", "--config", str(conf), "--cwd", str(repo), "--no-sync",
                      "--port", str(page)])  # fmt: skip
     assert code == 0
@@ -455,7 +461,12 @@ def test_move_data_moves_the_board_and_checks_the_copy(
     assert not (old / "data" / "board.db").exists()
     assert list((old / "data").glob("moved-*/board.db"))
     assert move.move_data(closed_port(), out=lines.append) == 0  # once moved, nothing more
-    assert "already" in lines[-1]
+    assert "nothing of the board is left" in lines[-1]
+    assert sorted(p.name for p in paths.data_dir().iterdir()) == [
+        "board.db",
+        "private-identifiers.txt",
+        "projects.toml",
+    ]  # no temporary copy or its -wal and -shm left beside it
 
 
 def test_move_data_refuses_while_the_page_answers(
@@ -465,3 +476,140 @@ def test_move_data_refuses_while_the_page_answers(
     monkeypatch.setattr(paths, "LEGACY_ROOT", old)
     assert move.move_data(page, out=lambda *_: None) == 2
     assert (old / "data" / "board.db").exists() and not paths.db_path().exists()
+
+
+# --- PR E, after review ----------------------------------------------------------------------
+
+
+def test_move_data_refuses_when_the_copy_does_not_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old = checkout_with_a_board(tmp_path)
+    monkeypatch.setattr(paths, "LEGACY_ROOT", old)
+    real = move.snapshot
+    calls = iter([0, 1])
+    monkeypatch.setattr(move, "snapshot", lambda db: {**real(db), "card": next(calls)})
+    assert move.move_data(closed_port(), out=lambda *_: None) == 1
+    assert (old / "data" / "board.db").exists() and not paths.db_path().exists()
+    assert not list(paths.data_dir().glob("board.db*"))
+
+
+def test_move_data_moves_a_config_without_a_board(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old = tmp_path / "checkout"
+    (old / "config").mkdir(parents=True)
+    (old / "config" / "projects.toml").write_text("[[project]]\npath = '/srv/x'\n")
+    monkeypatch.setattr(paths, "LEGACY_ROOT", old)
+    assert move.move_data(closed_port(), out=lambda *_: None) == 0
+    assert (paths.data_dir() / "projects.toml").exists()
+    assert not (old / "config" / "projects.toml").exists()
+
+
+def test_move_data_replaces_an_empty_board_but_never_a_used_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old = checkout_with_a_board(tmp_path)
+    monkeypatch.setattr(paths, "LEGACY_ROOT", old)
+    paths.data_dir().mkdir(parents=True, exist_ok=True)
+    with Store(paths.db_path()) as s:
+        s.apply(result([card("bl:x", "ideas")]), now())  # a board someone used here
+    assert move.move_data(closed_port(), out=lambda *_: None) == 1
+    assert (old / "data" / "board.db").exists()
+    paths.db_path().unlink()
+    Store(paths.db_path()).close()  # started empty by mistake
+    assert move.move_data(closed_port(), out=lambda *_: None) == 0
+    with Store(paths.db_path()) as s:
+        assert s.card("ny:1")["col"] == "done"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no POSIX modes")
+def test_move_data_makes_owner_only_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    old = checkout_with_a_board(tmp_path)
+    monkeypatch.setattr(paths, "LEGACY_ROOT", old)
+    assert move.move_data(closed_port(), out=lambda *_: None) == 0
+    for name in ("board.db", "projects.toml", "private-identifiers.txt"):
+        assert oct((paths.data_dir() / name).stat().st_mode & 0o777) == "0o600", name
+
+
+def test_the_page_check_needs_no_proxy_and_sees_ipv6(
+    page: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")  # a proxy that is not running
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    assert move.page_up(page)
+    assert locate.page_check(locate.board_url(page, "demo"))[0] == "up"
+    try:
+        six = socket.socket(socket.AF_INET6)
+        six.bind(("::1", 0))
+    except OSError:
+        pytest.skip("no IPv6 loopback here")
+    six.listen()
+    try:
+        assert move.page_up(six.getsockname()[1])
+    finally:
+        six.close()
+
+
+def test_old_files_in_the_main_checkout_of_a_worktree_are_found(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    main = tmp_path / "main"
+    (main / "data").mkdir(parents=True)
+    Store(main / "data" / "board.db").close()
+    (main / ".git" / "worktrees" / "wt").mkdir(parents=True)
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    (worktree / ".git").write_text(f"gitdir: {main / '.git' / 'worktrees' / 'wt'}\n")
+    monkeypatch.setattr(paths, "LEGACY_ROOT", worktree)
+    assert paths.legacy("db") == main / "data" / "board.db"
+    conf = tmp_path / "p.toml"
+    conf.write_text(f"[[project]]\npath = '{tmp_path}'\n", encoding="utf-8")
+    assert cli.main(["sync", "--config", str(conf)]) == 2
+    assert "move-data" in capsys.readouterr().err
+
+
+def test_an_old_config_in_the_checkout_is_refused_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    old = tmp_path / "checkout"
+    (old / "config").mkdir(parents=True)
+    (old / "config" / "projects.toml").write_text("[[project]]\npath = '/srv/x'\n")
+    monkeypatch.setattr(paths, "LEGACY_ROOT", old)
+    assert cli.main(["sync"]) == 2
+    assert "move-data" in capsys.readouterr().err
+
+
+def test_backups_prune_themselves(tmp_path: Path) -> None:
+    with Store(tmp_path / "board.db") as s:
+        start = datetime(2026, 10, 1, tzinfo=UTC)
+        for day in range(10):
+            store.backup(s.db, tmp_path / "board.db", "daily", start + timedelta(days=day))
+    assert len(list((tmp_path / "backups").glob("*-daily.db"))) == store.KEEP_DAILY
+
+
+class _OldPage(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:  # noqa: N802 - the stdlib's name
+        self.send_response(200)  # a page from before the code header
+        self.end_headers()
+
+    def log_message(self, *args: object) -> None:
+        pass
+
+
+def test_board_says_restart_to_a_page_with_no_code_header(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    httpd = socketserver.TCPServer(("127.0.0.1", 0), _OldPage)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        repo = tmp_path / "demo"
+        repo.mkdir()
+        conf = tmp_path / "p.toml"
+        conf.write_text(f"[[project]]\npath = '{repo}'\nname = \"demo\"\n", encoding="utf-8")
+        port = str(httpd.server_address[1])
+        cli.main(["board", "--config", str(conf), "--cwd", str(repo), "--no-sync", "--port", port])
+        assert "running older code (from before this check" in capsys.readouterr().out
+    finally:
+        httpd.shutdown()
+        httpd.server_close()

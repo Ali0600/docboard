@@ -198,6 +198,7 @@ def _card_view(row: object, now: datetime) -> dict:
 
 def create_app(cfg: Config, db_path: Path, port: int = 8742) -> FastAPI:
     board = Board(cfg, db_path, port)
+    running = code_id()  # the code this page started with, whatever is on disk later
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     templates = Jinja2Templates(directory=str(HERE / "templates"))
     templates.env.filters["linkify"] = linkify
@@ -220,7 +221,7 @@ def create_app(cfg: Config, db_path: Path, port: int = 8742) -> FastAPI:
         # Not "no-referrer": under it Chrome sends "Origin: null" on the page's own form posts.
         response.headers["Referrer-Policy"] = "same-origin"
         response.headers["Cache-Control"] = "no-store"
-        response.headers["X-Docboard-Code"] = code_id()  # `docboard board` compares it
+        response.headers["X-Docboard-Code"] = running  # `docboard board` compares it
         return response
 
     def now() -> datetime:

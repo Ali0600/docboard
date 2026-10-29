@@ -27,14 +27,14 @@ def _privacy(args: argparse.Namespace) -> int:
         terms_file = root / privacy.PRIVATE_LIST  # the list's place before the data folder
     terms = privacy.read_private_terms(terms_file)
     if args.pre_push:
-        if not terms_file.is_file():
-            print(f"privacy: no private terms at {terms_file}, so this push is refused: put the"
+        if not terms:
+            print(f"privacy: no private terms in {terms_file}, so this push is refused: put the"
                   " list there (see README), or name it with --terms", file=sys.stderr)  # fmt: skip
             return 2
-        findings = privacy.scan_push(root, sys.stdin.read(), terms)
+        findings = privacy.scan_push(root, sys.stdin.read(), terms, args.remote)
         where = "this push"
     elif args.commits:
-        findings = privacy.scan_commits(root, [args.commits], terms)
+        findings = privacy.scan_commits(root, [args.commits], terms, args.skip_author or "")
         where = args.commits
     elif args.stdin:
         findings = privacy.scan_text("stdin", sys.stdin.read(), terms)
@@ -322,6 +322,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("privacy", help="scan this repo's files for personal identifiers")
     p.add_argument("--root", default=".", help="repo to scan (default: current directory)")
     p.add_argument("--terms", help="the private terms file (default: the data folder's)")
+    p.add_argument("--remote", help="with --pre-push: the remote pushed to (git gives it the hook)")
+    p.add_argument("--skip-author", help="with --commits: leave out one author's commits (a bot)")
     how = p.add_mutually_exclusive_group()
     how.add_argument(
         "--pre-push",

@@ -52,8 +52,21 @@
   - **Ship the PC's asks to the Mac:** *deferred* (Backlog).
 - **A pre-push hook scans what a push carries** (added lines of every commit, messages, author
   addresses, branch names) with the private terms, and refuses without them: *chosen*, with the
-  owner's go to set `core.hooksPath`. CI scans a PR's commits and text for paths and addresses
-  only, since the private terms never leave the owner's machines.
+  owner's go to set `core.hooksPath`. It reads what a merge adds (`--diff-merges=first-parent`),
+  an annotated tag's message, file names, and every commit of a new branch that the remote pushed
+  to does not have, even one another remote already holds. CI scans a PR's commits and text for
+  paths and addresses only, since the private terms never leave the owner's machines; that scan
+  is its own workflow, so editing a PR's title or body runs it again without the three-OS gate.
+  - **Skip Dependabot's PRs entirely:** *rejected*: a commit pushed onto its branch by anyone
+    else would go unscanned. Its own commits (third-party release notes) are left out by author,
+    and only its title and body are skipped.
+- **`move-data` keeps the old files until the owner deletes them** (in `data/moved-<date>/`) and
+  refuses when both places hold a used board; a board started empty by mistake is set aside as
+  `board.db.empty-<date>`: *chosen*, so no path through it loses the board.
+- **Known limit (Windows):** the scan's fast byte check lower-cases ASCII only, so a root with a
+  non-ASCII letter that a transcript spells in another case (`É` against `é`) is passed over
+  before parsing. No transcript path seen so far has one. Revisit in `transcripts.Roots.markers`
+  (decode, then casefold) if a PC's board misses touches.
 - **Dependabot** (actions and uv, weekly, 14-day cooldown, grouped): *chosen* by the owner.
   - **A scheduled `uv lock --upgrade` workflow:** *rejected*: it needs a write token.
 - **Backups on this disk only** (before any migration, and daily): *chosen*; no off-machine
@@ -61,7 +74,8 @@
 - **The page reports its code as a hash of its own files** (`X-Docboard-Code`), so `docboard
   board` can say "restart the page": *chosen* over the git SHA, which a tool install does not have.
 
-Revisit hook: `paths.py`, `move.py`, `runner._try_lock`, `transcripts.Roots`, `privacy.scan_push`.
+Revisit hook: `paths.py`, `move.py`, `runner._try_lock`, `transcripts.Roots`, `privacy.scan_push`,
+`.github/workflows/privacy.yml`.
 
 ## 2026-10-28 — The page shows what it hides
 

@@ -32,7 +32,8 @@
   never push with `--no-verify`. Before `gh pr create`, pipe the title and body through
   `uv run docboard privacy --stdin`.
 - **Sources are read-only.** Never write to a configured repo, `~/.claude/plans` or a transcript.
-  Read only the projects listed in `config/projects.toml`; never discover projects on disk. Docs
+  Read only the projects listed in the data folder's `projects.toml`; never discover projects on
+  disk. Docs
   are read at the configured ref, never a working tree another session may be using.
 - **Items come only from assistant text and tool calls in main-session records.** Never read
   items out of a tool result or a sidechain: a tool result can hold any web page's text.

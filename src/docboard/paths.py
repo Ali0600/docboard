@@ -75,12 +75,40 @@ def terms_path(flag: str | None = None) -> Path:
     return Path(flag).expanduser() if flag else data_dir() / "private-identifiers.txt"
 
 
-def legacy(kind: str) -> Path | None:
-    """The checkout's old copy of the db, config or terms, if it is still there."""
-    if LEGACY_ROOT is None:
+def _main_checkout(root: Path) -> Path | None:
+    """The main checkout of a git worktree (its `.git` is a file naming the main one's)."""
+    marker = root / ".git"
+    if not marker.is_file():
         return None
-    old = LEGACY_ROOT / LEGACY[kind]
-    return old if old.exists() else None
+    text = marker.read_text(encoding="utf-8", errors="replace").strip()
+    if not text.startswith("gitdir:"):
+        return None
+    gitdir = Path(text.removeprefix("gitdir:").strip())
+    if not gitdir.is_absolute():
+        gitdir = (root / gitdir).resolve()
+    # <main>/.git/worktrees/<name>
+    return gitdir.parents[2] if len(gitdir.parents) > 2 else None
+
+
+def legacy_roots() -> list[Path]:
+    """Where the board's files lived before the data folder: this checkout, and when it is a
+    worktree, its main checkout too (the board's files were only ever there)."""
+    if LEGACY_ROOT is None:
+        return []
+    roots = [LEGACY_ROOT]
+    main = _main_checkout(LEGACY_ROOT)
+    if main is not None and main != LEGACY_ROOT:
+        roots.append(main)
+    return roots
+
+
+def legacy(kind: str) -> Path | None:
+    """The old copy of the db, config or terms, if one is still in a checkout."""
+    for root in legacy_roots():
+        old = root / LEGACY[kind]
+        if old.exists():
+            return old
+    return None
 
 
 def refuse_legacy(chosen: Path, kind: str) -> None:

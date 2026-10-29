@@ -32,27 +32,3 @@ jobs:
         shell: bash
         run: ./scripts/gate.sh
 
-  # A PR's own commits (messages, authors, added lines) and its title and body: paths and email
-  # addresses only, since the private terms exist only on the owner's machines (the pre-push
-  # hook checks those). Dependabot's text is third-party release notes, so its PRs skip this.
-  privacy-text:
-    if: github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with:
-          version: "0.11.14"
-      - name: The PR's commits and text
-        env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          uv run --frozen docboard privacy --commits "$BASE_SHA..$HEAD_SHA"
-          printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY" | uv run --frozen docboard privacy --stdin

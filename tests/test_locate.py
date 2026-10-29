@@ -169,7 +169,7 @@ def test_page_state_tells_up_stale_error_and_down(server: int) -> None:
 def write_config(tmp_path: Path, repo: Path) -> Path:
     path = tmp_path / "projects.toml"
     path.write_text(
-        f'[[project]]\npath = "{repo}"\nname = "demo"\n\n'
+        f"[[project]]\npath = '{repo}'\nname = \"demo\"\n\n"
         '[project.subprojects]\nglob = "games/*"\nexclude = ["_harness"]\n',
         encoding="utf-8",
     )

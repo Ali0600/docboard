@@ -81,8 +81,9 @@ def page_state(url: str, timeout: float = 2.0) -> str:
 
 def page_check(url: str, timeout: float = 2.0) -> tuple[str, str | None]:
     """The page's state (see page_state) and the code it runs (its X-Docboard-Code header)."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # loopback: no proxy
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as r:  # noqa: S310 - loopback http
+        with opener.open(url, timeout=timeout) as r:
             return "up", r.headers.get("X-Docboard-Code")
     except urllib.error.HTTPError as e:
         return ("stale" if e.code == 404 else f"answered {e.code}"), e.headers.get(
