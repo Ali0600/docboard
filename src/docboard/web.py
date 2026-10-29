@@ -269,6 +269,15 @@ def create_app(cfg: Config, db_path: Path, port: int = 8742) -> FastAPI:
             subs, _ = store.known(name)
             since = store.new_since(name, t)
             names = json.loads(last_ok["sub_names"]) if last_ok else {}
+            degraded = []
+            for d in json.loads(last["degraded"]) if last else []:
+                source = "ci" if d.startswith("ci:") else "gh"
+                read_at = store.last_read(name, source)
+                degraded.append({
+                    "text": d,
+                    "keeps": "CI cards" if source == "ci" else "PR and plan cards",
+                    "since": read_at[:16].replace("T", " ") if read_at else "",
+                })  # fmt: skip
         by_id = {c["id"]: c for c in rows}
         visible = [c for c in rows + manual if c["parent"] is None]
         for c in visible:
@@ -317,7 +326,7 @@ def create_app(cfg: Config, db_path: Path, port: int = 8742) -> FastAPI:
             "names": names, "unknown_sub": bool(sub) and sub != "_root" and sub not in subs,
             "sub_shown": sub[:40] + ("…" if len(sub) > 40 else ""),
             "new_total": sum(1 for c in in_sub if c["new"]), "drawn": t.isoformat(),
-            "degraded": json.loads(last["degraded"]) if last else [],
+            "degraded": degraded,
             "warnings": json.loads(last["warnings"]) if last else [],
             "accept_cmd": runner.accept_command(name),
         })  # fmt: skip

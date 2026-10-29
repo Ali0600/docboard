@@ -23,6 +23,7 @@ TURN_SHARE = 0.6
 class Router:
     names: tuple[str, ...]
     repos: dict[str, str] = field(default_factory=dict)  # "owner/name" casefolded -> project
+    slugs: dict[str, str] = field(default_factory=dict)  # casefolded -> "owner/name" as configured
     _patterns: list[tuple[str, re.Pattern[str]]] = field(default_factory=list)
     _subs: dict[str, Attributor] = field(default_factory=dict)  # a project's games name it too
 
@@ -36,15 +37,20 @@ class Router:
         sub-projects (a game's name names the games repo)."""
         projects = list(projects)
         repos = {repo.casefold(): name for name, repo in projects if repo}
+        slugs = {repo.casefold(): repo for _, repo in projects if repo}
         patterns = [
             (name, re.compile(r"(?<![\w-])" + re.escape(name) + r"(?![\w-])", re.IGNORECASE))
             for name, _ in projects
         ]
-        return cls(names=tuple(n for n, _ in projects), repos=repos, _patterns=patterns,
-                   _subs=dict(subs or {}))  # fmt: skip
+        return cls(names=tuple(n for n, _ in projects), repos=repos, slugs=slugs,
+                   _patterns=patterns, _subs=dict(subs or {}))  # fmt: skip
 
     def project_of_repo(self, repo: str) -> str | None:
         return self.repos.get(repo.casefold())
+
+    def slug_of_repo(self, repo: str) -> str | None:
+        """The repo as the config spells it (a PR card's id uses that spelling)."""
+        return self.slugs.get(repo.casefold())
 
     def by_name(self, text: str) -> str | None:
         """The one configured project the text names; None when it names none or several."""

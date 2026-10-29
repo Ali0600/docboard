@@ -626,11 +626,12 @@ class _Deriver:
         for link in self.inp.scan.pr_links.values():
             if link.repo.casefold() == github:
                 continue
-            if self.router is not None and not self.router.project_of_repo(link.repo):
+            slug = self.router.slug_of_repo(link.repo) if self.router is not None else link.repo
+            if not slug:
                 continue
             key = self._group_key(link.session, _t(link.ts))
-            if key:
-                found[key][(link.repo, link.number)] = None
+            if key:  # spelled as configured: the PR card's id, whatever case the link used
+                found[key][(slug, link.number)] = None
         return {k: sorted(v) for k, v in found.items()}
 
     def _plan_card(
