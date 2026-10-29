@@ -2,6 +2,20 @@
 
 Teachable things that came up building docboard. Newest first.
 
+### A copied record keeps its timestamp, so "earliest copy wins" needs a tie-break
+
+A continued or forked Claude Code session copies its parent's records into its own file with
+the parent's timestamps and its own session id. De-duplicating "earliest timestamp wins" then
+ties, and the first file read wins the tie: folder sort order decided which session an ask
+belonged to, and three asks of a games-repo session showed on another repo's board.
+
+**Why it came up:** routing cards by their session's folder moved "launch +1 Gravity" to
+browser-shield, because that repo's folder sorts first and held a continued session's copy.
+
+**Takeaway:** when copies share their sort key, break the tie by something that tells the
+original from the copy (here, which session started first), and test it with the original in
+the folder read last.
+
 ### A safety check that runs before the degrade switch turns an outage into a refusal
 
 A collapse check ("a source fell to zero: refuse the sync") and an outage switch ("gh is down:

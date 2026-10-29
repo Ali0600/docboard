@@ -77,6 +77,10 @@ class Attributor:
         hit = {slug for slug, pat in self._patterns if pat.search(text)}
         return hit.pop() if len(hit) == 1 else None
 
+    def mentions(self, text: str) -> bool:
+        """Whether the text names any of the sub-projects."""
+        return any(pat.search(text) for _, pat in self._patterns)
+
     def by_branch(self, branch: str) -> str | None:
         """The sub-project whose branch prefix the branch starts with, the longest one winning.
         An agent's own prefix (`codex/`, `claude/`) is looked past when nothing matches."""

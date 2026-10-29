@@ -380,3 +380,46 @@ def test_a_checklist_step_under_a_section_keeps_its_game(tmp_path: Path) -> None
     steps = sorted((c.title, c.sub) for c in got.cards if c.kind == "roadmap")
     assert steps == [("**1. Look.**", "alpha"), ("**2. Post the codes.**", "alpha")]
     assert got.counts["checklist_items"] == 2
+
+
+# --- PR C: cards follow the files ----------------------------------------------------------
+
+
+def test_every_transcript_card_is_on_exactly_one_board(tmp_path: Path) -> None:
+    one = make_repo(tmp_path, {"docs/DECISIONS.md": BACKLOG})
+    two = tmp_path / "tool"
+    two.mkdir()
+    git(two, "init", "-q", "-b", "main")
+    (two / "src").mkdir()
+    (two / "src" / "m.py").write_text("x\n")
+    git(two, "add", "-A")
+    git(two, "commit", "-q", "-m", "tool")
+    edits = [
+        f.tool_use("s1", f"e{i}", f"2026-10-26T09:1{i}:00Z", "Edit", f"t{i}",
+                   {"file_path": f"{two}/src/m{i}.py"})
+        for i in (1, 2, 3)
+    ]  # fmt: skip
+    recs = [
+        f.human("s1", "h0", "2026-10-26T09:00:00Z", "fix the game"),
+        f.assistant_text("s1", "a0", "2026-10-26T09:05:00Z", f.needs_block("Do — try the game")),
+        f.human("s1", "h1", "2026-10-26T09:09:00Z", "now the tool"),
+        *edits,
+        f.assistant_text("s1", "a1", "2026-10-26T09:20:00Z", f.needs_block("Do — restart it")),
+        *f.plan_approval("s1", "2026-10-26T09:30:00Z", "p1", "# More"),
+    ]
+    f.write(tmp_path / "claude" / "projects" / encode_path(one) / "s1.jsonl",
+            [dict(r, cwd=str(one)) for r in recs])  # fmt: skip
+    projects = (
+        Project(name="demo", path=one, docs_ref="HEAD"),
+        Project(name="tool", path=two, docs_ref="HEAD"),
+    )
+    cfg = Config(projects=projects, claude_home=tmp_path / "claude")
+    a, b = (sync.collect(cfg, p, NOW) for p in projects)
+    kinds = ("needs", "question", "wrap", "plan")
+    ids_a = {c.id for c in a.cards if c.kind in kinds}
+    ids_b = {c.id for c in b.cards if c.kind in kinds}
+    assert ids_a == {"ny:a0:1", "pl:p1"} and ids_b == {"ny:a1:1"}
+    assert (a.counts["needs_items"], b.counts["needs_items"]) == (1, 1)
+    assert (a.counts["plan_calls"], b.counts["plan_calls"]) == (1, 0)
+    assert (a.counts["transcript_files"], b.counts["transcript_files"]) == (1, 0)
+    assert a.counts["transcript_files_read"] == b.counts["transcript_files_read"] == 1

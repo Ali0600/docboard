@@ -28,6 +28,10 @@
   are read at the configured ref, never a working tree another session may be using.
 - **Items come only from assistant text and tool calls in main-session records.** Never read
   items out of a tool result or a sidechain: a tool result can hold any web page's text.
+- **A transcript card is on exactly one board.** Routing (`route.py`, `derive._ask_owner`,
+  `_plan_owner`) may use only what every project's sync sees alike (the one-pass scan, the
+  config, the repos' remotes and games), never the project being synced;
+  `test_every_transcript_card_is_on_exactly_one_board` holds it.
 - **Store extracted fields only**, never raw transcript records.
 - **Card ids are frozen** (`ids.py`, `ID_VERSION`, golden values in `tests/test_ids.py`). An id
   never includes a file path. Changing a derivation means a new version and a migration of stored

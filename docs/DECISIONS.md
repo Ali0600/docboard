@@ -2,6 +2,13 @@
 
 ## Backlog — alternatives worth trying later
 
+- **Move a card to another board by hand** (2026-10-28, cards follow the files): an ask that
+  names no project and touched no files stays on the board its transcript is filed under (two
+  browser-shield follow-ups sit on roblox-games). Revisit hook: a `board_override` table read by
+  `derive.mine`, so every sync still agrees.
+- **Read transcripts filed under a project's former path** (2026-10-28): only single-session
+  leftovers were found, none for a configured project. Revisit hook: a `former_paths` list on
+  `config.Project`, added to `transcripts.discover`'s encodings.
 - **A Claude Artifact page instead of a local web page** (2026-10-27, where the board lives): a
   private claude.ai page with its own database, readable on a phone, filled from each session.
   Deferred: a page there cannot read files, so every sync would have to go through a session.
@@ -24,6 +31,41 @@
   and `/board` starts the page for the session when it is down. Revisit hook: a LaunchAgent from
   `uv tool install` with absolute paths, `PATH`, `HOME` and `LANG` set, proved under `env -i`,
   nothing under `~/Documents`.
+
+## 2026-10-28 — Cards follow the files their work touched
+
+docboard's own board was empty: every session that built it ran from the games repo's folder, so
+its asks and plan sat on the games repo's Platform and its PRs had no plan.
+- **Cards follow the files:** *chosen* by the owner. Each sync reads every configured project's
+  transcripts in one pass (a file unchanged since the last read is not read again), and routes an
+  ask by the project its text names (a game's name names its repo), else its turn's files (three
+  or more, 60%), else the folder its transcript is filed under; a plan by the repo most of its
+  PRs went to. A card another board held is adopted with the owner's moves (the store's rule).
+  - **Open docboard sessions in docboard's folder instead:** *rejected* by the owner: the past
+    would have stayed on the wrong board.
+  - **Route by each record's `cwd`:** *rejected*: measured, one session's records changed `cwd`
+    back and forth between two repos; the files a turn touched say where its work was.
+  - **The window since the last plan as a project rule:** *rejected*: measured, it would move
+    four games-repo asks to docboard (a docs split run through Bash touched no files).
+- **An ask that names no game and touched no game's files goes to the project's root:** *chosen*
+  by the owner; the old fallback (the game of the session's commonest branch) is gone. On the
+  live data 47 cards moved from a game to Platform; most are Platform's (CI budget, the Mac,
+  keys), a few were game asks that name no game.
+  - **Keep the guess, with a badge:** *rejected* by the owner.
+- **Plans across continued sessions:** a session continued or forked from another holds copies
+  of its parent's records, with the same times. One plan card per first approval, whichever
+  sessions hold it; a PR joins the plan its own session holds. A copy's tie goes to the session
+  that started first (the original), not to the folder read first.
+- **A PR titled as the first of a series (`PR 1`, `PR A`) after the plan already holds one ends
+  that plan's claim:** *chosen*; it detached Run 14's PRs from Run 13's plan.
+  - **Close a plan at `/wrap-up` or `/compact`:** *rejected*: measured, it detached plans' own
+    later PRs.
+  - **Cap a plan at its `## PR` count:** *rejected*: an unrelated PR came first in one run.
+- **In a repo with no GitHub remote, a plan is Done once its session moved on or went quiet:**
+  *chosen*, since no PR will ever show its progress.
+
+Revisit hook: `route.py`, `derive._ask_owner`, `_plan_owner`, `_pr_owner`, and
+`transcripts.scan_all`.
 
 ## 2026-10-28 — Cards in the right place: checklists, wrapped titles, a PR's own files
 

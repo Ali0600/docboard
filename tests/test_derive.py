@@ -371,3 +371,70 @@ def test_a_waiting_question_folds_into_older_after_fourteen_days(tmp_path: Path)
         False,
         True,
     ]
+
+
+# --- PR C, on one project's scan: the fixes that need no router ------------------------------
+
+
+def two_files(tmp_path: Path, s1: list[dict], s2: list[dict]) -> T.Scan:
+    proj = tmp_path / "projects" / T.encode_path(f.ROOT)
+    f.write(proj / "s1.jsonl", s1)
+    f.write(proj / "s2.jsonl", s2)
+    scan = T.scan_project(f.ROOT, tmp_path / "projects")
+    scan.session_mtime = dict.fromkeys(scan.session_mtime, NOW.timestamp())
+    return scan
+
+
+def derived(scan: T.Scan, prs: list[PullRequest] = (), github: str | None = "acme/demo") -> dict:
+    got, _ = D.derive(
+        D.Inputs(
+            project="demo",
+            github=github,
+            attributor=att(),
+            backlog=[],
+            roadmap=[],
+            prs=list(prs),
+            squash={},
+            scan=scan,
+            now=NOW,
+        )
+    )
+    return {c.id: c for c in got}
+
+
+def test_a_pr_opened_in_a_continued_session_joins_its_parents_plan(tmp_path: Path) -> None:
+    approval = f.plan_approval("s1", "2026-10-20T10:00:00Z", "p1", "# Alpha Game: rewards")
+    child = [*(dict(r, sessionId="s2") for r in approval), f.pr_link("s2", 7, "2026-10-21T10:00Z")]
+    got = derived(two_files(tmp_path, approval, child), [pr(7, "open", "2026-10-21T09:00:00Z")])
+    assert got["pr:acme/demo#7"].parent == "pl:p1"
+
+
+def test_a_new_series_of_prs_is_not_the_old_plans(tmp_path: Path) -> None:
+    recs = [
+        *f.plan_approval(S, "2026-10-20T10:00:00Z", "p1", "# Run 1"),
+        *(f.pr_link(S, n, f"2026-10-2{n}T12:00:00Z") for n in (1, 2, 3)),
+    ]
+    prs = [
+        pr(1, "open", "2026-10-21T10:00:00Z", title="PR 1 — the first"),
+        pr(2, "open", "2026-10-22T10:00:00Z"),
+        pr(3, "open", "2026-10-23T10:00:00Z", title="PR A: the next run"),
+    ]
+    got = cards(tmp_path, recs, prs)
+    assert [got[f"pr:acme/demo#{n}"].parent for n in (1, 2, 3)] == ["pl:p1", "pl:p1", None]
+
+
+def test_the_sessions_branch_never_places_an_ask(tmp_path: Path) -> None:
+    rec = f.assistant_text(
+        S, "a1", "2026-10-26T10:00:00Z", f.needs_block("Do — plug in the Mac"), branch="alpha-sky"
+    )
+    got = cards(tmp_path, [rec])["ny:a1:1"]
+    assert (got.sub, got.sub_reason) == ("", "root")
+
+
+def test_a_plan_without_github_leaves_next_once_its_session_moves_on(tmp_path: Path) -> None:
+    recs = [
+        *f.plan_approval("s1", "2026-10-20T10:00:00Z", "p1", "# First"),
+        *f.plan_approval("s1", "2026-10-22T10:00:00Z", "p2", "# Second"),
+    ]
+    got = derived(two_files(tmp_path, recs, []), github=None)
+    assert (got["pl:p1"].column, got["pl:p2"].column) == (D.DONE, D.IN_PROGRESS)

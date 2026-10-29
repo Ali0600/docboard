@@ -15,8 +15,9 @@ from docboard import docsrc, ghsrc
 from docboard.attribution import Attributor
 from docboard.config import Config, Project
 from docboard.derive import COLUMNS, Card, DocFile, Inputs, derive
-from docboard.gitrepo import Repo
-from docboard.transcripts import scan_project
+from docboard.gitrepo import GitError, Repo
+from docboard.route import Router
+from docboard.transcripts import MEMO, scan_all
 
 JSON_VERSION = 1
 
@@ -69,6 +70,22 @@ def _subprojects(
             if isinstance(value, str):
                 names[slug] = value
     return Attributor.build(sp.parent, slugs, names, sp.aliases, sp.branches), names
+
+
+def router(cfg: Config) -> Router:
+    """Every configured project with its GitHub repo and its games' names, for routing session
+    items to boards."""
+    pairs, subs = [], {}
+    for p in cfg.projects:
+        repo = p.github
+        try:
+            opened = Repo.open(p.path, p.docs_ref)
+            repo = repo or opened.github_slug()
+            subs[p.name] = _subprojects(opened, p, [])[0]
+        except (GitError, OSError):
+            pass  # not a git repo here: its own sync says so; routing goes on without it
+        pairs.append((p.name, repo))
+    return Router.build(pairs, subs)
 
 
 def collect(cfg: Config, project: Project, now: datetime, gh: str | None = None) -> SyncResult:
@@ -131,9 +148,14 @@ def collect(cfg: Config, project: Project, now: datetime, gh: str | None = None)
     timings["github"] = time.monotonic() - t1
 
     t2 = time.monotonic()
-    scan = scan_project(project.path, cfg.transcripts_dir)
+    # Every configured project's transcripts: a session filed under one project may work on
+    # another, and its cards follow the files it touched (route.py). Unchanged files are not
+    # read again (transcripts.MEMO).
+    scan = scan_all([(p.name, p.path) for p in cfg.projects], cfg.transcripts_dir, memo=MEMO)
+    routing = router(cfg)
     timings["transcripts"] = time.monotonic() - t2
 
+    routed: dict[str, int] = {}
     cards, more = derive(
         Inputs(
             project=project.name,
@@ -146,7 +168,9 @@ def collect(cfg: Config, project: Project, now: datetime, gh: str | None = None)
             scan=scan,
             now=now,
             ref_sha=repo.ref_sha,
-        )
+            router=routing,
+        ),
+        counts=routed,
     )
     warnings += more
     states = Counter(p.state for p in prs)
@@ -160,28 +184,38 @@ def collect(cfg: Config, project: Project, now: datetime, gh: str | None = None)
         "prs_merged": states["merged"],
         "prs_open": states["open"],
         "prs_closed": states["closed"],
-        "transcript_files": scan.files,
-        "transcript_bytes": scan.bytes,
-        "transcript_foreign": scan.foreign,
-        "transcript_long_lines": scan.skipped_long,
-        "transcript_parse_errors": scan.parse_errors,
-        "transcript_unreadable": scan.unreadable,
-        "plan_calls": len(scan.plans),
+        # Files filed under this project (its own folders), so the floors mean what they did:
+        "transcript_files": scan.files_by[project.name],
+        "transcript_bytes": scan.bytes_by[project.name],
+        "transcript_foreign": scan.foreign_by[project.name],
+        "transcript_long_lines": scan.long_by[project.name],
+        "transcript_parse_errors": scan.parse_errors_by[project.name],
+        "transcript_unreadable": scan.unreadable_by[project.name],
+        # What the one pass read for every project (informational):
+        "transcript_files_read": scan.files,
+        "transcript_bytes_read": scan.bytes,
+        # This board's share of the session items, after routing:
+        "plan_calls": routed.get("plan_calls", 0),
         "plan_cards": sum(1 for c in cards if c.kind == "plan"),
-        "needs_items": len(scan.needs),
+        "needs_items": routed.get("needs_items", 0),
         "needs_cards": sum(1 for c in cards if c.kind == "needs"),
-        "needs_headings_without_items": len(scan.empty_needs),
-        "questions": len(scan.questions),
+        "needs_headings_without_items": routed.get("needs_headings_without_items", 0),
+        "questions": routed.get("questions", 0),
         "questions_waiting": sum(1 for c in cards if c.kind == "question"),
-        "wrap_asks": len(scan.wraps),
+        "wrap_asks": routed.get("wrap_asks", 0),
+        "routed_here": sum(1 for c in cards if c.source.get("routed")),
     }
-    if scan.parse_errors:
-        warnings.append(f"{scan.parse_errors} transcript lines were not JSON")
-    if scan.unreadable:
-        warnings.append(f"{scan.unreadable} transcript files could not be read (deleted mid-scan?)")
-    if scan.empty_needs:
+    if counts["transcript_parse_errors"]:
+        warnings.append(f"{counts['transcript_parse_errors']} transcript lines were not JSON")
+    if counts["transcript_unreadable"]:
         warnings.append(
-            f"{len(scan.empty_needs)} 'Needs you' headings had no items in a known shape"
+            f"{counts['transcript_unreadable']} transcript files could not be read"
+            " (deleted mid-scan?)"
+        )
+    if counts["needs_headings_without_items"]:
+        warnings.append(
+            f"{counts['needs_headings_without_items']} 'Needs you' headings had no items in a"
+            " known shape"
         )
     timings["total"] = time.monotonic() - t0
     return SyncResult(
