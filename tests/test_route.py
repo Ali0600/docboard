@@ -522,3 +522,16 @@ def test_a_deleted_transcript_is_forgotten_by_the_memo(tmp_path: Path) -> None:
     (projects / T.encode_path(f.ROOT) / "s1.jsonl").unlink()
     T.scan_all(PROJECTS, projects, memo)
     assert memo._items == {}
+
+
+def test_a_plans_pr_in_another_repo_is_named_by_its_configured_slug(tmp_path: Path) -> None:
+    recs = [
+        *f.plan_approval("s1", "2026-10-20T10:00:00Z", "p1", "# Mostly the tool"),
+        *(f.pr_link("s1", n, f"2026-10-21T1{n}:00:00Z", repo="acme/gadget") for n in (3, 4, 5)),
+        f.pr_link("s1", 9, "2026-10-21T16:00:00Z", repo="Acme/Demo"),  # GitHub's own case
+        f.pr_link("s1", 9, "2026-10-21T16:05:00Z", repo="acme/demo"),
+    ]
+    scan = scan_of(tmp_path, {"s1": (f.ROOT, recs)})
+    gadget = [pr(n, f"2026-10-21T0{n}:00:00Z", repo="acme/gadget") for n in (3, 4, 5)]
+    plan = board(scan, "gadget", gadget)["pl:p1"]
+    assert plan.source["other_prs"] == ["acme/demo#9"]  # the PR card's own id, once
