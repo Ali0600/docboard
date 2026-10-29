@@ -2,6 +2,10 @@
 
 ## Backlog — alternatives worth trying later
 
+- **Bring the Windows PC's asks to the Mac's board** (2026-10-28, Windows): the PC now keeps a
+  board of its own sessions. Revisit hook: a PC-side export of extracted items only (never raw
+  records) to a private place the Mac reads as a second transcript source; needs ids are path-free,
+  so the same ask de-duplicates across machines.
 - **Move a card to another board by hand** (2026-10-28, cards follow the files): an ask that
   names no project and touched no files stays on the board its transcript is filed under (two
   browser-shield follow-ups sit on roblox-games). Revisit hook: a `board_override` table read by
@@ -31,6 +35,47 @@
   and `/board` starts the page for the session when it is down. Revisit hook: a LaunchAgent from
   `uv tool install` with absolute paths, `PATH`, `HOME` and `LANG` set, proved under `env -i`,
   nothing under `~/Documents`.
+
+## 2026-10-28 — The board runs anywhere: a data folder, Windows, a pre-push scan
+
+- **The database, config and private terms live in the user's data folder** (macOS
+  `~/Library/Application Support/docboard`, Windows `%LOCALAPPDATA%\docboard`, Linux
+  `$XDG_DATA_HOME/docboard`; `DOCBOARD_HOME` moves all of it): *chosen* by the owner.
+  `docboard move-data` moves them once, with the page stopped, and checks the copy first; until
+  then every command refuses, rather than start an empty board beside the real one.
+  - **Keep them in the checkout and develop only in worktrees:** *rejected* by the owner: a branch
+    checked out there would still decide the live board, and a tool install could not find them.
+- **Windows: the PC keeps a board of its own sessions:** *chosen*; `msvcrt.locking` beside
+  `fcntl.flock` (no new dependency), transcript paths matched with either slash and any case,
+  CI on Linux, Windows and macOS.
+  - **`portalocker`:** *rejected*: a dependency for about 20 lines.
+  - **Ship the PC's asks to the Mac:** *deferred* (Backlog).
+- **A pre-push hook scans what a push carries** (added lines of every commit, messages, author
+  addresses, branch names) with the private terms, and refuses without them: *chosen*, with the
+  owner's go to set `core.hooksPath`. It reads what a merge adds (`--diff-merges=first-parent`),
+  an annotated tag's message, file names, and every commit of a new branch that the remote pushed
+  to does not have, even one another remote already holds. CI scans a PR's commits and text for
+  paths and addresses only, since the private terms never leave the owner's machines; that scan
+  is its own workflow, so editing a PR's title or body runs it again without the three-OS gate.
+  - **Skip Dependabot's PRs entirely:** *rejected*: a commit pushed onto its branch by anyone
+    else would go unscanned. Its own commits (third-party release notes) are left out by author,
+    and only its title and body are skipped.
+- **`move-data` keeps the old files until the owner deletes them** (in `data/moved-<date>/`) and
+  refuses when both places hold a used board; a board started empty by mistake is set aside as
+  `board.db.empty-<date>`: *chosen*, so no path through it loses the board.
+- **Known limit (Windows):** the scan's fast byte check lower-cases ASCII only, so a root with a
+  non-ASCII letter that a transcript spells in another case (`É` against `é`) is passed over
+  before parsing. No transcript path seen so far has one. Revisit in `transcripts.Roots.markers`
+  (decode, then casefold) if a PC's board misses touches.
+- **Dependabot** (actions and uv, weekly, 14-day cooldown, grouped): *chosen* by the owner.
+  - **A scheduled `uv lock --upgrade` workflow:** *rejected*: it needs a write token.
+- **Backups on this disk only** (before any migration, and daily): *chosen*; no off-machine
+  copy was asked for.
+- **The page reports its code as a hash of its own files** (`X-Docboard-Code`), so `docboard
+  board` can say "restart the page": *chosen* over the git SHA, which a tool install does not have.
+
+Revisit hook: `paths.py`, `move.py`, `runner._try_lock`, `transcripts.Roots`, `privacy.scan_push`,
+`.github/workflows/privacy.yml`.
 
 ## 2026-10-28 — The page shows what it hides
 

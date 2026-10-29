@@ -198,6 +198,7 @@ def collect(cfg: Config, project: Project, now: datetime, gh: str | None = None)
         "transcript_long_lines": scan.long_by[project.name],
         "transcript_parse_errors": scan.parse_errors_by[project.name],
         "transcript_unreadable": scan.unreadable_by[project.name],
+        "transcript_touches": scan.touches_by[project.name],
         # What the one pass read for every project (informational):
         "transcript_files_read": scan.files,
         "transcript_bytes_read": scan.bytes,

@@ -1,0 +1,24 @@
+# Weekly update PRs, each run through CI like any PR. The 14-day cooldown matches uv's
+# `exclude-newer` in pyproject.toml: no release younger than two weeks is proposed.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+    versioning-strategy: lockfile-only
+    open-pull-requests-limit: 3
+    groups:
+      python:
+        patterns: ["*"]

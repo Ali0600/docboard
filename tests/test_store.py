@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ def col(store: Store, cid: str) -> str:
     return store.card(cid)["col"]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no POSIX modes")
 def test_the_database_is_private(tmp_path: Path) -> None:
     Store(tmp_path / "d" / "board.db").close()
     assert oct((tmp_path / "d" / "board.db").stat().st_mode & 0o777) == "0o600"

@@ -2,6 +2,43 @@
 
 Teachable things that came up building docboard. Newest first.
 
+### `git log -p` hides what a merge adds, and a new branch has no range
+
+The pre-push scan read each pushed commit's patch. A merge prints no patch by default, so a line
+written while resolving a conflict went out unread; an added line that itself began `++` printed
+as `+++` and was taken for a file header; a new branch arrives with an all-zero remote id, so
+`old..new` names nothing; and "already on a remote" counted a private remote's copy as published.
+
+**Why it came up:** the review planted each case in a scratch repo and the scan found none.
+
+**Takeaway:** scan `git log -p --diff-merges=first-parent <new> --not --remotes=<remote pushed
+to>`, read file headers by their place after `diff --git`, never by a prefix, and plant a merge,
+a tag and a new branch in the hook's tests.
+
+### `urllib` sends a request to 127.0.0.1 through `http_proxy`
+
+`urlopen` honours the proxy variables for every host `no_proxy` does not name, loopback
+included, so the "is the page running?" check said "down" on a machine with a proxy set. A page
+bound to `::1` was also missed by a check of `127.0.0.1` alone.
+
+**Why it came up:** a test set `http_proxy` to a closed port and the page check failed against a
+page that was up.
+
+**Takeaway:** a local health check opens its own opener with `ProxyHandler({})` (or a plain
+socket) and tries both loopback addresses.
+
+### A byte prefilter is case-sensitive; Windows paths are not
+
+The scan skips a transcript line unless it holds the exact bytes `"file_path":"<root>`. On
+Windows the same file can be written `C:\\Users\\…`, `c:/users/…` or in any case, so most
+touches would have been skipped before anything parsed them.
+
+**Why it came up:** a test with three spellings of one Windows root found one touch of three.
+
+**Takeaway:** when a fast byte check stands in front of a slower exact one, make it at least as
+forgiving as the data's own rules (here: lower-case the haystack on Windows), and test it with
+every spelling the writer can produce.
+
 ### A copied record keeps its timestamp, so "earliest copy wins" needs a tie-break
 
 A continued or forked Claude Code session copies its parent's records into its own file with

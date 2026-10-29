@@ -76,10 +76,18 @@ def board_url(port: int, project: str, sub: str | None = None) -> str:
 def page_state(url: str, timeout: float = 2.0) -> str:
     """Whether the page answers: up; stale when it does not know this project (it was started
     before the project was added to the config); "answered <code>" for another error; down."""
+    return page_check(url, timeout)[0]
+
+
+def page_check(url: str, timeout: float = 2.0) -> tuple[str, str | None]:
+    """The page's state (see page_state) and the code it runs (its X-Docboard-Code header)."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # loopback: no proxy
     try:
-        with urllib.request.urlopen(url, timeout=timeout):  # noqa: S310 - a loopback http URL
-            return "up"
+        with opener.open(url, timeout=timeout) as r:
+            return "up", r.headers.get("X-Docboard-Code")
     except urllib.error.HTTPError as e:
-        return "stale" if e.code == 404 else f"answered {e.code}"
+        return ("stale" if e.code == 404 else f"answered {e.code}"), e.headers.get(
+            "X-Docboard-Code"
+        )
     except (urllib.error.URLError, OSError):
-        return "down"
+        return "down", None

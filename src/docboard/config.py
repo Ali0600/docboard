@@ -1,4 +1,4 @@
-"""The projects allowlist (config/projects.toml). Nothing outside it is ever read."""
+"""The projects allowlist (projects.toml in the data folder). Nothing outside it is ever read."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CONFIG = REPO_ROOT / "config" / "projects.toml"
+from docboard import paths
+
 _GITHUB = re.compile(r"^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$")
 _GLOB = re.compile(r"^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*/\*$")
 
@@ -80,7 +80,8 @@ def _str_map(value: object, where: str) -> dict[str, tuple[str, ...]]:
 
 
 def parse(data: dict, base: Path) -> Config:
-    home = Path(os.path.expanduser(str(data.get("claude_home", "~/.claude"))))
+    default_home = os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude"
+    home = Path(os.path.expanduser(str(data.get("claude_home", default_home))))
     raw = data.get("project", [])
     if not isinstance(raw, list) or not raw:
         raise ConfigError("the config lists no [[project]]")
@@ -125,10 +126,24 @@ def parse(data: dict, base: Path) -> Config:
 
 
 def load(path: Path | None = None) -> Config:
-    path = path or Path(os.environ.get("DOCBOARD_CONFIG", DEFAULT_CONFIG))
-    if not path.is_file():
+    """The config: the given file, else $DOCBOARD_CONFIG, else the data folder's projects.toml.
+    A missing file fails, naming where it was looked for; nothing is created."""
+    if path is not None:
+        chosen, how = path, "--config"
+    else:
+        chosen, how = paths.config_path()
+        if how == "the data folder":
+            paths.refuse_legacy(chosen, "config")
+    if not chosen.is_file():
         raise ConfigError(
-            f"no config at {path}: copy config/projects.example.toml to config/projects.toml"
+            f"no config at {chosen} (chosen by {how}): start from config/projects.example.toml"
+            " in docboard's code"
         )
-    with path.open("rb") as fh:
-        return parse(tomllib.load(fh), path.parent)
+    try:
+        with chosen.open("rb") as fh:
+            return parse(tomllib.load(fh), chosen.parent)
+    except tomllib.TOMLDecodeError as e:
+        raise ConfigError(
+            f"{chosen}: not TOML ({e}); a Windows path goes in single quotes ('C:\\Users\\…')"
+            " or with forward slashes"
+        ) from None

@@ -26,9 +26,10 @@ from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
 
 from docboard import runner
+from docboard.build import code_id
 from docboard.config import Config, Project
 from docboard.derive import COLUMNS, DONE, IDEAS, IN_PROGRESS, NEEDS_YOU, NEXT, RECENT
-from docboard.store import DEFAULT_DB, HIDDEN, FloorError, Store, StoreError
+from docboard.store import HIDDEN, FloorError, Store, StoreError
 
 HERE = Path(__file__).parent
 STALE_AFTER = 120.0  # seconds: an open board older than this refreshes in the background
@@ -195,8 +196,9 @@ def _card_view(row: object, now: datetime) -> dict:
     }
 
 
-def create_app(cfg: Config, db_path: Path = DEFAULT_DB, port: int = 8742) -> FastAPI:
+def create_app(cfg: Config, db_path: Path, port: int = 8742) -> FastAPI:
     board = Board(cfg, db_path, port)
+    running = code_id()  # the code this page started with, whatever is on disk later
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     templates = Jinja2Templates(directory=str(HERE / "templates"))
     templates.env.filters["linkify"] = linkify
@@ -219,6 +221,7 @@ def create_app(cfg: Config, db_path: Path = DEFAULT_DB, port: int = 8742) -> Fas
         # Not "no-referrer": under it Chrome sends "Origin: null" on the page's own form posts.
         response.headers["Referrer-Policy"] = "same-origin"
         response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Docboard-Code"] = running  # `docboard board` compares it
         return response
 
     def now() -> datetime:
