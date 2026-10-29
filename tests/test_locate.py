@@ -252,3 +252,27 @@ def test_board_prints_the_link_when_the_sync_crashes(
     assert code == 1
     assert "sync not stored (GitError" in out
     assert "/p/demo?sub=alpha" in out
+
+
+def test_board_says_how_many_need_you_and_how_many_are_new(
+    repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conf = write_config(tmp_path, repo)
+    db = tmp_path / "board.db"
+
+    def fake_sync(c: Config, project: Project, path: Path, **kw: object) -> tuple:
+        from boardkit import card, now
+
+        r = result([card("ny:1", "needs_you", kind="needs", sub="alpha"),
+                    card("ny:2", "needs_you", kind="needs", sub="beta")])  # fmt: skip
+        r.timings["total"] = 0.1
+        from docboard.store import Store
+
+        with Store(path) as s:
+            return r, s.apply(r, now())
+
+    monkeypatch.setattr(runner, "run_sync", fake_sync)
+    code = cli.main(["board", "--config", str(conf), "--cwd", str(repo / "games" / "alpha"),
+                     "--port", str(closed_port()), "--db", str(db)])  # fmt: skip
+    assert code == 0
+    assert "alpha: 1 need you, 1 new" in capsys.readouterr().out
