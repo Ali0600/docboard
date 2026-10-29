@@ -3,7 +3,7 @@
 {% block crumbs %}{% if project %}<a class="crumb" href="/p/{{ project.name|urlencode }}">{{ project.name }}</a>{% endif %}<span class="crumb">card</span>{% endblock %}
 {% block main %}
 <article class="detail">
-  <h1>{{ card.title }}</h1>
+  <h1>{{ card.title|plain }}</h1>
   <p class="muted">
     {{ card.kind }} · {{ COLUMN_NAMES[card.col] }}{% if card.moved %} (moved by you; its source says {{ COLUMN_NAMES[column_derived] }}){% endif %}
     · {{ card.sub or (project.root_name if project else "") }} ({{ card.sub_reason }})
@@ -48,7 +48,7 @@
 
   {% if children %}
   <h2>Pull requests</h2>
-  <ul>{% for ch in children %}<li><a href="{{ ch.href }}">{{ ch.title }}</a> <span class="state state-{{ ch.col }}">{{ COLUMN_NAMES[ch.col] }}</span></li>{% endfor %}</ul>
+  <ul>{% for ch in children %}<li><a href="{{ ch.href }}">{{ ch.title|plain }}</a> <span class="state state-{{ ch.col }}">{{ COLUMN_NAMES[ch.col] }}</span></li>{% endfor %}</ul>
   {% endif %}
 
   <h2>Source</h2>
@@ -57,7 +57,9 @@
       {% if links.editor %}<a href="{{ links.editor }}">open in editor</a>{% endif %}
       {% if links.github %}<a href="{{ links.github }}" rel="noopener noreferrer">on GitHub</a>{% endif %}</li>{% endif %}
     {% if links.pr %}<li><a href="{{ links.pr }}" rel="noopener noreferrer">PR #{{ source.number }}</a> ({{ source.state }}, {{ source.branch }})</li>{% endif %}
-    {% if source.session %}<li>session {{ source.session }}{% if source.session_title %}: {{ source.session_title }}{% endif %}</li>{% endif %}
+    {% if source.session %}<li><a href="/s/{{ source.session|urlencode }}">session {{ source.session }}{% if source.session_title %}: {{ source.session_title }}{% endif %}</a></li>{% endif %}
+    {% if source.plan %}<li>its plan, on the {{ source.plan_project }} board: <a href="/i/{{ source.plan|urlencode }}">{{ source.plan_title }}</a></li>{% endif %}
+    {% if source.other_prs %}<li>PRs in other repos: {{ source.other_prs|join(", ") }}</li>{% endif %}
     {% if source.plan_file %}<li>plan file {{ source.plan_file }}</li>{% endif %}
     {% if card.manual %}<li>added by you</li>{% endif %}
   </ul>

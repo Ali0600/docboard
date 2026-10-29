@@ -13,7 +13,7 @@ from pathlib import Path
 
 from docboard import __version__, config, locate, privacy, runner, sync
 from docboard.derive import COLUMNS
-from docboard.store import DEFAULT_DB, ApplyReport, FloorError
+from docboard.store import DEFAULT_DB, ApplyReport, FloorError, Store
 
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
 DEFAULT_PORT = 8742
@@ -157,8 +157,8 @@ def _board(args: argparse.Namespace) -> int:
         return 2
     project, sub = found.project, found.sub
     status = 0
+    db = Path(args.db) if args.db else DEFAULT_DB
     if not args.no_sync:
-        db = Path(args.db) if args.db else DEFAULT_DB
         try:
             result, report = runner.run_sync(cfg, project, db)
         except (FloorError, runner.Busy, runner.SyncFailed) as e:
@@ -176,6 +176,10 @@ def _board(args: argparse.Namespace) -> int:
             if sub is not None and sub not in result.subs:
                 print(f"  {sub!r} has no board of its own yet; showing the whole project")
                 sub = None
+    if db.exists():
+        with Store(db) as store:
+            needs, new = store.summary(project.name, sub, datetime.now(UTC))
+        print(f"{sub or project.name}: {needs} need you, {new} new")
     url = locate.board_url(args.port, project.name, sub)
     print(f"board: {url}")
     state = locate.page_state(url)

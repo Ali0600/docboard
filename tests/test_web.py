@@ -434,8 +434,8 @@ def test_new_cards_are_marked_until_you_mark_them_seen(env: tuple[TestClient, Pa
     assert client.post("/p/demo/seen", data={}, headers=SAME).status_code == 303
     assert 'class="badge new"' not in client.get("/p/demo").text
     with Store(db) as s:
-        s.apply(result([card("ny:1", "needs_you", kind="needs"),
-                        card("ny:2", "needs_you", kind="needs", title="Fresh ask")]), now(1))  # fmt: skip
+        fresh = card("ny:2", "needs_you", kind="needs", title="Fresh ask")
+        s.apply(result([card("ny:1", "needs_you", kind="needs"), fresh]), now(1))
     page = client.get("/p/demo").text
     assert page.count('class="badge new"') == 1 and "1 new" in page
 

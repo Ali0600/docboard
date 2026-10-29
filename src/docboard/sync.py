@@ -42,11 +42,12 @@ class SyncResult:
     sessions: set[str] = field(default_factory=set)
     # Transcript cards another board owns -> that board: handed over, never left on no board.
     handover: dict[str, str] = field(default_factory=dict)
+    # session -> {"title", "decided", "first_at", "last_at"}: answers no plan of this board took
+    session_notes: dict[str, dict] = field(default_factory=dict)
 
     def to_json(self) -> dict:
-        data = {
-            k: v for k, v in self.__dict__.items() if k not in ("cards", "sessions", "handover")
-        }
+        skip = ("cards", "sessions", "handover", "session_notes")
+        data = {k: v for k, v in self.__dict__.items() if k not in skip}
         data["version"] = JSON_VERSION
         data["cards"] = [c.to_json() for c in self.cards]
         return data
@@ -244,6 +245,7 @@ def collect(cfg: Config, project: Project, now: datetime, gh: str | None = None)
         sub_names=names,
         sessions=set(scan.session_mtime),
         handover=extras.get("handover", {}),
+        session_notes=extras.get("sessions", {}),
     )
 
 

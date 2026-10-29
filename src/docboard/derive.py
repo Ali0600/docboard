@@ -146,9 +146,8 @@ class _Deriver:
         self.groups: dict[str, list[_PlanGroup]] = {}  # each session's own runs of approvals
         self.merged: dict[str, _PlanGroup] = {}  # first call id -> one plan, across sessions
         self.holding: dict[str, set[str]] = {}  # first call id -> the sessions holding it
-        self.call_key: dict[
-            str, str
-        ] = {}  # each approved call -> the plan (its first call) it is in
+        self.call_key: dict[str, str] = {}  # each approved call -> its plan's key
+        self.sessions: dict[str, dict] = {}  # session -> its answers that shaped no plan here
 
     # --- which board -----------------------------------------------------------------------
 
@@ -755,8 +754,19 @@ class _Deriver:
                 continue
             target = self._plan_for_question(q, at)
             card = cards_by_id.get(target) if target else None
+            answers = [f"{qq} → {a}" for qq, a in res.answers]
             if card is not None:
-                card.decided.extend(f"{qq} → {a}" for qq, a in res.answers)
+                card.decided.extend(answers)
+            elif owner[0] == self.inp.project:
+                # No plan of this board took it: the session's own page keeps it.
+                note = self.sessions.setdefault(
+                    q.session,
+                    {"title": scan.titles.get(q.session, ""), "decided": [],
+                     "first_at": q.ts, "last_at": q.ts},
+                )  # fmt: skip
+                note["decided"].extend(answers)
+                note["first_at"] = min(note["first_at"], q.ts)
+                note["last_at"] = max(note["last_at"], q.ts)
 
     def _plan_for_question(self, q: object, at: datetime) -> str | None:
         """The plan a question shaped: the first approved at or after it, else the last one,
@@ -816,7 +826,8 @@ def derive(
 ) -> tuple[list[Card], list[str]]:
     """The project's cards. With a router, transcript cards another board owns are left out,
     `counts` (when given) receives this board's share of the transcript items, and `extras`
-    receives `handover`: the ids of transcript cards another board owns, with that board."""
+    receives `handover` (the ids of transcript cards another board owns, with that board) and
+    `sessions` (answers that shaped no plan, per session)."""
     d = _Deriver(inp)
     d.backlog()
     d.roadmap()
@@ -830,6 +841,7 @@ def derive(
     handover = {cid: owner[0] for cid, owner in d.owner.items() if owner[0] != inp.project}
     if extras is not None:
         extras["handover"] = handover
+        extras["sessions"] = d.sessions
     if counts is not None:
         for (proj, key), n in d.tally.items():
             if proj == inp.project:

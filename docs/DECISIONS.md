@@ -32,6 +32,24 @@
   `uv tool install` with absolute paths, `PATH`, `HOME` and `LANG` set, proved under `env -i`,
   nothing under `~/Documents`.
 
+## 2026-10-28 — The page shows what it hides
+
+- **"New" is a card first seen after the owner's own "Mark all seen"** (a POST, kept in `visit`),
+  or in the last day before the first mark: *chosen*.
+  - **Record each page view as a visit:** *rejected*: a GET would change state, and opening the
+    page to check one card would clear every "new".
+- **The whole project's Ideas fold to a count per game** until a game or `?ideas=1` is chosen:
+  *chosen*; on the live board the default view went from 265 KB with 1,520 options to 126 KB with
+  632. Titles lose their inline markdown on the page only, so stored titles and ids are untouched.
+- **A background sync starts only for the board's own page loads** (`Sec-Fetch-Site` same-origin,
+  or none for an address typed in): *chosen*; another site's `<img>` could otherwise start a
+  1.9 GB sync every two minutes.
+- **A session's page holds the answers that shaped no plan** (`session` table): *chosen*, so no
+  answer is dropped; the session's cards on every board are listed beside them.
+
+Revisit hook: `web.project_board` and `session_page`, `Store.new_since`, `summary` and
+`renamed_to`.
+
 ## 2026-10-28 — Cards follow the files their work touched
 
 docboard's own board was empty: every session that built it ran from the games repo's folder, so
