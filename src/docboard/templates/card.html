@@ -6,7 +6,7 @@
   <h1>{{ card.title|plain }}</h1>
   <p class="muted">
     {{ card.kind }} · {{ COLUMN_NAMES[card.col] }}{% if card.moved %} (moved by you; its source says {{ COLUMN_NAMES[column_derived] }}){% endif %}
-    · {{ card.sub or (project.root_name if project else "") }} ({{ card.sub_reason }})
+    · {{ names.get(card.sub, card.sub) if card.sub else (project.root_name if project else "") }} ({{ card.sub_reason }})
     {% if card.age %} · {{ card.age }} ago{% endif %}{% if card.raised > 1 %} · raised {{ card.raised }}×{% endif %}
   </p>
   {% if card.badges or card.reopened or card.source_gone %}<div class="badges">
@@ -25,7 +25,7 @@
     {% endif %}
     {% if not card.manual %}
     <form method="post" action="{{ card.href }}/sub">
-      <select name="sub" aria-label="Game"><option value="">{{ project.root_name if project else "root" }}</option>{% for s in subs %}<option value="{{ s }}"{% if s == card.sub %} selected{% endif %}>{{ s }}</option>{% endfor %}</select>
+      <select name="sub" aria-label="Game"><option value="">{{ project.root_name if project else "root" }}</option>{% for s in subs %}<option value="{{ s }}"{% if s == card.sub %} selected{% endif %}>{{ names.get(s, s) }}</option>{% endfor %}</select>
       <button type="submit">Set game</button>
     </form>
     {% else %}

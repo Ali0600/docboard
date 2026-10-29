@@ -35,7 +35,9 @@
 ## 2026-10-28 — The page shows what it hides
 
 - **"New" is a card first seen after the owner's own "Mark all seen"** (a POST, kept in `visit`),
-  or in the last day before the first mark: *chosen*.
+  or in the last day before the first mark: *chosen*. A card is first seen when it is stored, and
+  the mark is the time the page was drawn, so a sync running across the click hides nothing; a
+  reworded idea keeps its first-seen time.
   - **Record each page view as a visit:** *rejected*: a GET would change state, and opening the
     page to check one card would clear every "new".
 - **The whole project's Ideas fold to a count per game** until a game or `?ideas=1` is chosen:
@@ -44,8 +46,14 @@
 - **A background sync starts only for the board's own page loads** (`Sec-Fetch-Site` same-origin,
   or none for an address typed in): *chosen*; another site's `<img>` could otherwise start a
   1.9 GB sync every two minutes.
-- **A session's page holds the answers that shaped no plan** (`session` table): *chosen*, so no
-  answer is dropped; the session's cards on every board are listed beside them.
+- **A session's page holds the answers that shaped no plan** (`session` table, one row per session
+  and board, replaced on every sync, so an answer a later plan took leaves): *chosen*, so no
+  answer is dropped; the session's cards on every board are listed beside them, gone ones too.
+- **The gone list links each card's page**, which has its Move control and history, rather than a
+  Move control in the list (a move on a gone card shows nowhere until it comes back).
+- **A background sync is not started again within two minutes of the last one ending**, so a
+  sync longer than the page's two-minute wait is not followed by another at the next reload;
+  "Sync now" always starts one.
 
 Revisit hook: `web.project_board` and `session_page`, `Store.new_since`, `summary` and
 `renamed_to`.

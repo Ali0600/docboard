@@ -14,7 +14,7 @@
   <ul class="triage">
     {% for c in cards %}
     <li><a href="{{ c.href }}">{{ c.title|plain }}</a>
-      <span class="muted">{{ c.project }} · {{ c.kind }} · {{ COLUMN_NAMES[c.col] }}{% if c.age %} · {{ c.age }} ago{% endif %}</span></li>
+      <span class="muted">{{ c.project }} · {{ c.kind }} · {% if c.gone %}gone from its source{% else %}{{ COLUMN_NAMES[c.col] }}{% endif %}{% if c.age %} · {{ c.age }} ago{% endif %}</span></li>
     {% endfor %}
   </ul>
   {% endif %}

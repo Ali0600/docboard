@@ -149,6 +149,22 @@ MIGRATIONS: tuple[str, ...] = (
         last_at TEXT
     );
     """,
+    # A session's answers kept per board: two boards noting one session no longer overwrite
+    # each other (the review of 2026-10-28).
+    """
+    CREATE TABLE session_note (
+        id TEXT NOT NULL,
+        project TEXT NOT NULL,
+        title TEXT NOT NULL,
+        decided TEXT NOT NULL,
+        first_at TEXT,
+        last_at TEXT,
+        PRIMARY KEY (id, project)
+    );
+    INSERT INTO session_note SELECT id, project, title, decided, first_at, last_at FROM session;
+    DROP TABLE session;
+    ALTER TABLE session_note RENAME TO session;
+    """,
 )
 
 _CARD_FIELDS = (
@@ -344,6 +360,8 @@ class Store:
         message = ("accepted drop: " + "; ".join(accepted.values())) if accepted else ""
         with self.tx():
             self._apply(result, now, frozen, report)
+            # This board's notes are what this sync found: an answer a later plan took leaves.
+            self.db.execute("DELETE FROM session WHERE project = ?", (result.project,))
             for sid, note in result.session_notes.items():
                 self.db.execute(
                     "INSERT OR REPLACE INTO session (id, project, title, decided, first_at,"
@@ -405,6 +423,9 @@ class Store:
 
     def _apply(self, result: SyncResult, now: str, frozen: set[str], report: ApplyReport) -> None:
         db = self.db
+        # A card is first seen when it is stored, not when its sync started: a "Mark all seen"
+        # made while the sync was reading must not hide what it brings.
+        stored = datetime.now(UTC).isoformat()
         existing = {
             r["id"]: r
             for r in db.execute("SELECT * FROM board WHERE project = ?", (result.project,))
@@ -438,7 +459,7 @@ class Store:
                 db.execute(
                     f"INSERT INTO card (id, project, {cols}, first_seen, last_seen)"  # noqa: S608
                     f" VALUES (?, ?, {marks}, ?, ?)",
-                    (card.id, result.project, *(row[f] for f in _CARD_FIELDS), now, now),
+                    (card.id, result.project, *(row[f] for f in _CARD_FIELDS), stored, now),
                 )
                 report.added += 1
                 fresh.append(card)
@@ -617,6 +638,9 @@ class Store:
                         (best.id, old["id"]),
                     )
                 db.execute("UPDATE event SET card_id = ? WHERE card_id = ?", (best.id, old["id"]))
+                db.execute(  # the same card reworded: not new
+                    "UPDATE card SET first_seen = ? WHERE id = ?", (old["first_seen"], best.id)
+                )
                 self._event(now, "sync", best.id, "renamed", detail)
                 db.execute("DELETE FROM card WHERE id = ?", (old["id"],))
                 report.renamed += 1
@@ -663,14 +687,17 @@ class Store:
                 return card_id
         return None
 
-    def session(self, session_id: str) -> sqlite3.Row | None:
-        return self.db.execute("SELECT * FROM session WHERE id = ?", (session_id,)).fetchone()
+    def session_notes(self, session_id: str) -> list[sqlite3.Row]:
+        """Each board's note of one session (its title, the answers no plan there took)."""
+        return list(self.db.execute(
+            "SELECT * FROM session WHERE id = ? ORDER BY project", (session_id,)
+        ))  # fmt: skip
 
     def session_cards(self, session_id: str) -> list[sqlite3.Row]:
-        """Every board's cards from one session, its PRs and plans included."""
+        """Every board's cards from one session, its PRs and plans included, gone ones too."""
         return list(self.db.execute(
-            "SELECT * FROM board WHERE json_extract(source, '$.session') = ? AND gone_at IS NULL"
-            " ORDER BY project, event_at",
+            "SELECT * FROM board WHERE json_extract(source, '$.session') = ?"
+            " ORDER BY gone_at IS NOT NULL, project, event_at",
             (session_id,),
         ))  # fmt: skip
 
@@ -686,16 +713,20 @@ class Store:
         return mark if mark is not None else now - NEW_WINDOW
 
     def summary(self, project: str, sub: str | None, now: datetime) -> tuple[int, int]:
-        """(asks in Needs you from the last 14 days, new cards) on the board or one game."""
+        """(asks in Needs you from the last 14 days, new cards) on the board or one game, counted
+        as the page's chips count them: top-level cards and the owner's own, none hidden."""
         since = self.new_since(project, now)
+        rows = [(r["col"], bool(r["older"]), r["first_seen"], r["sub"])
+                for r in self.cards(project) if r["parent"] is None]  # fmt: skip
+        rows += [(m["col"], False, m["created_at"], m["sub"]) for m in self.manual(project)]
         needs = new = 0
-        for r in self.cards(project):
-            if sub is not None and r["sub"] != sub:
+        for col, older, first_seen, card_sub in rows:
+            if sub is not None and card_sub != sub:
                 continue
-            if r["col"] == NEEDS_YOU and not r["older"]:
+            if col == NEEDS_YOU and not older:
                 needs += 1
-            first = _ts(r["first_seen"])
-            if r["col"] != HIDDEN and first is not None and first > since:
+            first = _ts(first_seen)
+            if col != HIDDEN and first is not None and first > since:
                 new += 1
         return needs, new
 

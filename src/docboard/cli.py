@@ -138,6 +138,8 @@ def _report(project: config.Project, result: sync.SyncResult, report: ApplyRepor
         print(f"  {report.reopened} reopened: raised again after you resolved them")
     if report.adopted:
         print(f"  {report.adopted} moved here from another board")
+    if report.handed_over:
+        print(f"  {report.handed_over} handed to the board their work is on")
     if report.kept_open:
         print(f"  {report.kept_open} open asks kept although their transcript is gone")
     for w in report.warnings():
@@ -179,7 +181,9 @@ def _board(args: argparse.Namespace) -> int:
     if db.exists():
         with Store(db) as store:
             needs, new = store.summary(project.name, sub, datetime.now(UTC))
-        print(f"{sub or project.name}: {needs} need you, {new} new")
+            ok = store.last_run(project.name, ok_only=True)
+        names = json.loads(ok["sub_names"]) if ok else {}
+        print(f"{names.get(sub, sub) if sub else project.name}: {needs} need you, {new} new")
     url = locate.board_url(args.port, project.name, sub)
     print(f"board: {url}")
     state = locate.page_state(url)

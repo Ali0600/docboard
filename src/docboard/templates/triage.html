@@ -8,7 +8,7 @@ session: a hint only, never applied.</p>
 <nav class="chips" aria-label="Games">
   <a class="chip{% if not sub %} on{% endif %}" href="{{ url() }}">All</a>
   <a class="chip{% if sub == "_root" %} on{% endif %}" href="{{ url(sub="_root") }}">{{ project.root_name }}</a>
-  {% for s in subs %}<a class="chip{% if s == sub %} on{% endif %}" href="{{ url(sub=s) }}">{{ s }}</a>{% endfor %}
+  {% for s in subs %}<a class="chip{% if s == sub %} on{% endif %}" href="{{ url(sub=s) }}">{{ names.get(s, s) }}</a>{% endfor %}
 </nav>
 
 {% if undone is not none %}<p class="notice">{% if undone == 0 %}Nothing was put back: every card in that batch moved since{% else %}Undone: {{ undone }} card{{ "s" if undone != 1 }} put back{% endif %}{% if kept %}; {{ kept }} left as they are, because something moved them since{% endif %}.</p>{% endif %}
@@ -36,7 +36,7 @@ session: a hint only, never applied.</p>
     <ul class="triage">
       {% for c in confirm_items %}
       <li><input type="hidden" name="ids" value="{{ c.id }}"><a href="{{ c.href }}">{{ c.title|plain }}</a>
-        <span class="muted">{{ c.sub or project.root_name }} · {{ c.age }} ago</span></li>
+        <span class="muted">{{ names.get(c.sub, c.sub) if c.sub else project.root_name }} · {{ c.age }} ago</span></li>
       {% endfor %}
     </ul>
     <div class="bulk">
@@ -61,7 +61,7 @@ session: a hint only, never applied.</p>
         <input type="checkbox" name="ids" value="{{ c.id }}"{% if select_all %} checked{% endif %}>
         <a href="{{ c.href }}">{{ c.title|plain }}</a>
       </label>
-      <span class="muted">{{ c.sub or project.root_name }} · {{ c.age }} ago{% if c.raised > 1 %} · raised {{ c.raised }}×{% endif %}{% if c.reopened %} · raised again after you {{ "dismissed" if c.reopened_was == "hidden" else "resolved" }} it{% endif %}</span>
+      <span class="muted">{{ names.get(c.sub, c.sub) if c.sub else project.root_name }} · {{ c.age }} ago{% if c.raised > 1 %} · raised {{ c.raised }}×{% endif %}{% if c.reopened %} · raised again after you {{ "dismissed" if c.reopened_was == "hidden" else "resolved" }} it{% endif %}</span>
       {% if c.evidence %}<div class="evidence">You said next: {{ c.evidence }}</div>{% endif %}
     </li>
     {% endfor %}

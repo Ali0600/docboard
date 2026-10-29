@@ -41,7 +41,7 @@ CSP = (
     "connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
 )
 _URL = re.compile(r"https?://[^\s<>\"'`]+")
-_MD_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+_MD_LINK = re.compile(r"\[([^\]]*)\]\((?:[^()\s]|\([^()\s]*\))*\)")  # a URL may hold (…)
 # Page loads that start a background sync: the board's own pages, and an address typed in or a
 # bookmark. Never another site's <img> or a script (cross-site, same-site, or no header).
 OWN_LOADS = ("same-origin", "none")
@@ -106,6 +106,7 @@ class Board:
         self.origins = {f"http://{h}" for h in self.hosts}
         self._syncing: set[str] = set()
         self._threads: dict[str, threading.Thread] = {}
+        self._finished: dict[str, float] = {}  # when each project's last background sync ended
         self._guard = threading.Lock()
         self.subs: dict[str, list[str]] = {}
 
@@ -115,10 +116,17 @@ class Board:
     def store(self) -> Store:
         return Store(self.db_path)
 
-    def refresh_in_background(self, project: Project) -> threading.Thread | None:
-        """Starts one sync of the project unless one is already running; returns its thread."""
+    def refresh_in_background(
+        self, project: Project, force: bool = False
+    ) -> threading.Thread | None:
+        """Starts one sync of the project unless one is running, or (unless forced) one ended
+        in the last two minutes: a sync longer than that would otherwise be followed by
+        another at the page's next reload. Returns its thread."""
         with self._guard:
             if project.name in self._syncing:
+                return None
+            ended = self._finished.get(project.name)
+            if not force and ended is not None and time.monotonic() - ended < STALE_AFTER:
                 return None
             self._syncing.add(project.name)
 
@@ -135,6 +143,7 @@ class Board:
             finally:
                 with self._guard:
                     self._syncing.discard(project.name)
+                    self._finished[project.name] = time.monotonic()
 
         thread = threading.Thread(target=work, name=f"sync-{project.name}", daemon=True)
         with self._guard:
@@ -253,7 +262,7 @@ def create_app(cfg: Config, db_path: Path = DEFAULT_DB, port: int = 8742) -> Fas
                 board.refresh_in_background(project)
             rows = [_card_view(r, t) for r in store.cards(name)]
             manual = [_card_view(_ManualRow(m), t) for m in store.manual(name)]
-            gone = [_card_view(r, t) for r in store.gone(name)]
+            gone = [c for c in (_card_view(r, t) for r in store.gone(name)) if _in_sub(c, sub)]
             subs, _ = store.known(name)
             since = store.new_since(name, t)
             names = json.loads(last_ok["sub_names"]) if last_ok else {}
@@ -303,34 +312,47 @@ def create_app(cfg: Config, db_path: Path = DEFAULT_DB, port: int = 8742) -> Fas
             "gone": gone, "hidden": sum(1 for c in in_sub if c["col"] == HIDDEN),
             "show_hidden": hidden, "back": back, "movable": [*COLUMNS, HIDDEN], "subs": subs,
             "names": names, "unknown_sub": bool(sub) and sub != "_root" and sub not in subs,
-            "new_total": sum(1 for c in in_sub if c["new"]),
+            "sub_shown": sub[:40] + ("…" if len(sub) > 40 else ""),
+            "new_total": sum(1 for c in in_sub if c["new"]), "drawn": t.isoformat(),
             "degraded": json.loads(last["degraded"]) if last else [],
             "warnings": json.loads(last["warnings"]) if last else [],
             "accept_cmd": runner.accept_command(name),
         })  # fmt: skip
 
     @app.post("/p/{name}/seen")
-    def mark_seen(name: str, back: str = Form(default="")) -> Response:
+    def mark_seen(
+        name: str, back: str = Form(default=""), drawn: str = Form(default="")
+    ) -> Response:
         if board.project(name) is None:
             return not_found("project")
+        # Seen means seen on the page: cards stored after it was drawn stay new.
+        t = now()
+        try:
+            at = datetime.fromisoformat(drawn)
+            at = at if at.tzinfo else at.replace(tzinfo=UTC)
+        except ValueError:
+            at = t
         with board.store() as store:
-            store.mark_seen(name, now().isoformat())
+            store.mark_seen(name, min(at, t).isoformat())
         return RedirectResponse(_safe_back(back, f"/p/{quote(name, safe='')}"), 303)
 
     @app.get("/s/{session_id}", response_class=HTMLResponse)
     def session_page(request: Request, session_id: str) -> Response:
         t = now()
         with board.store() as store:
-            note = store.session(session_id)
+            notes = store.session_notes(session_id)
             found = store.session_cards(session_id)
-        if note is None and not found:
+        if not notes and not found:
             return not_found("session")
-        cards = [_card_view(r, t) | {"project": r["project"]} for r in found]
-        titles = (json.loads(r["source"]).get("session_title", "") for r in found)
-        title = (note["title"] if note else "") or next((x for x in titles if x), "")
+        cards = [_card_view(r, t) | {"project": r["project"], "gone": r["gone_at"] is not None}
+                 for r in found]  # fmt: skip
+        titles = [n["title"] for n in notes] + [
+            json.loads(r["source"]).get("session_title", "") for r in found
+        ]
+        decided = [d for n in notes for d in json.loads(n["decided"])]
         return templates.TemplateResponse(request, "session.html", {
-            "session": session_id, "title": title, "cards": cards,
-            "decided": json.loads(note["decided"]) if note else [],
+            "session": session_id, "title": next((x for x in titles if x), ""), "cards": cards,
+            "decided": list(dict.fromkeys(decided)),
         })  # fmt: skip
 
     def triage_url(name: str, sub: str = "", **extra: object) -> str:
@@ -359,9 +381,11 @@ def create_app(cfg: Config, db_path: Path = DEFAULT_DB, port: int = 8742) -> Fas
                 [_card_view(r, t) for r in store.batch_cards(batch["id"])] if batch else []
             )
             subs, _ = store.known(name)
+            names = _names(store, name)
         older = [i for i in items if i["older"]]
         return templates.TemplateResponse(request, "triage.html", {
             "project": project, "items": items, "older": len(older), "sub": sub, "subs": subs,
+            "names": names,
             "select_all": select == "all",
             "confirm_items": older if confirm == "older" and older else None,
             "batch": batch, "batch_cards": batch_cards, "undone": undone_n, "kept": kept_n or 0,
@@ -400,7 +424,7 @@ def create_app(cfg: Config, db_path: Path = DEFAULT_DB, port: int = 8742) -> Fas
         project = board.project(name)
         if project is None:
             return not_found("project")
-        board.refresh_in_background(project)
+        board.refresh_in_background(project, force=True)
         return RedirectResponse(_safe_back(back, f"/p/{quote(name, safe='')}"), 303)
 
     @app.post("/p/{name}/cards")
@@ -439,9 +463,10 @@ def create_app(cfg: Config, db_path: Path = DEFAULT_DB, port: int = 8742) -> Fas
                 "evidence": row["evidence"] if row is not None else "",
             }
             subs, github = store.known(project.name) if project else ([], None)
+            names = _names(store, project.name) if project else {}
         links = _source_links(project, github, source) if project else {}
         return templates.TemplateResponse(request, "card.html", {
-            "card": card, "events": events, "children": children, "source": source,
+            "card": card, "events": events, "children": children, "source": source, "names": names,
             "links": links, "project": project, "movable": [*COLUMNS, HIDDEN], "subs": subs,
             **extra,
         })  # fmt: skip
@@ -521,6 +546,12 @@ class _ManualRow:
 def _count(value: str) -> int | None:
     """A count from a query parameter, or None for anything that is not one."""
     return int(value) if value.isdigit() and len(value) < 7 else None
+
+
+def _names(store: Store, project: str) -> dict[str, str]:
+    """The games' own names, as the last good sync read them."""
+    run = store.last_run(project, ok_only=True)
+    return json.loads(run["sub_names"]) if run else {}
 
 
 def _inside(path: str, folder: Path) -> bool:

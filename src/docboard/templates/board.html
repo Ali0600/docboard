@@ -77,10 +77,11 @@
     <a class="chip{% if chip.key == sub %} on{% endif %}" href="?sub={{ chip.key|urlencode }}">{{ chip.label }}{% if chip.needs %} <span class="n">{{ chip.needs }}</span>{% endif %}{% if chip.new %} <span class="n new">{{ chip.new }} new</span>{% endif %}</a>
     {% endfor %}
   </nav>
-  {% if unknown_sub %}<p class="warn">No game named “{{ sub }}” on this board (renamed, or not on its branch yet): nothing to show here.</p>{% endif %}
+  {% if unknown_sub %}<p class="warn">No game named “{{ sub_shown }}” on this board (renamed, or not on its branch yet): nothing to show here.</p>{% endif %}
   {% if new_total %}
   <form class="seen" method="post" action="/p/{{ project.name|urlencode }}/seen">
     <input type="hidden" name="back" value="{{ back }}">
+    <input type="hidden" name="drawn" value="{{ drawn }}">
     {{ new_total }} new since you last marked the board seen. <button type="submit">Mark all seen</button>
   </form>
   {% endif %}
