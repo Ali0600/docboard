@@ -341,3 +341,33 @@ def test_a_waiting_question_and_a_pending_plan_get_older(tmp_path: Path) -> None
     ]
     got = cards(tmp_path, recs)
     assert (got["aq:q1"].older, got["pl:p1"].older, got["aq:q2"].older) == (True, True, False)
+
+
+def test_a_pr_spanning_two_games_is_still_voted_on(tmp_path: Path) -> None:
+    att3 = Attributor.build("games", ["alpha", "beta", "gamma"], {}, {}, {})
+    files = ["games/alpha/a.md", "games/alpha/b.md", "games/beta/c.md"]
+    scan = T.scan_project(f.ROOT, tmp_path / "projects")
+    got, _ = D.derive(
+        D.Inputs(project="demo", github="acme/demo", attributor=att3, backlog=[], roadmap=[],
+                 prs=[pr(9, "merged", "2026-10-20T10:00:00Z", "2026-10-20T11:00:00Z")],
+                 squash={9: files}, scan=scan, now=NOW)
+    )  # fmt: skip
+    (card,) = got
+    assert (card.sub, card.sub_reason) == ("alpha", "files")
+
+
+def test_a_waiting_question_folds_into_older_after_fourteen_days(tmp_path: Path) -> None:
+    q = {"questions": [{"question": "Which way?"}]}
+    recs = [
+        f.tool_use(S, "u1", "2026-10-14T10:00:00Z", "AskUserQuestion", "q1", q),  # 13 days
+        f.tool_use(S, "u2", "2026-10-12T10:00:00Z", "AskUserQuestion", "q2", q),  # 15 days
+        f.tool_use(S, "u3", "2026-10-14T11:00:00Z", "ExitPlanMode", "p1", {"plan": "# A"}),
+        f.tool_use(S, "u4", "2026-10-12T11:00:00Z", "ExitPlanMode", "p2", {"plan": "# B"}),
+    ]
+    got = cards(tmp_path, recs)
+    assert [got[i].older for i in ("aq:q1", "aq:q2", "pl:p1", "pl:p2")] == [
+        False,
+        True,
+        False,
+        True,
+    ]

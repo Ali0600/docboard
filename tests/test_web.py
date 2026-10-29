@@ -347,3 +347,14 @@ def test_a_plan_file_outside_the_plans_folder_is_not_shown(tmp_path: Path) -> No
     client = TestClient(create_app(cfg, db, PORT), base_url=BASE, follow_redirects=False)
     assert "a-plan.md" in client.get("/i/pl:1").text
     assert "/etc/hosts" not in client.get("/i/pl:2").text
+
+
+def test_a_plan_file_must_sit_inside_the_plans_folder() -> None:
+    from docboard.web import _inside
+
+    plans = Path("/" + "srv/claude/plans")
+    assert _inside(str(plans / "a.md"), plans)
+    for outside in (plans / ".." / "secret.md", plans.parent / "x.md",
+                    Path(str(plans) + "-evil") / "x.md"):  # fmt: skip
+        assert not _inside(str(outside), plans), outside
+    assert not _inside("bad\0path", plans)  # a path the OS refuses reads as outside

@@ -13,6 +13,7 @@ _BULLET = re.compile(r"^- \*\*(.+?)\*\*(.*)$")
 _BULLET_START = re.compile(r"^- \*\*")
 _HEADING = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
 _CHECK = re.compile(r"^(\s*)- \[( |x|X)\]\s+(.*)$")
+_FENCE = re.compile(r"^\s*(```|~~~)")
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,7 @@ class RoadmapItem:
     text: str
     done: bool
     line: int
+    title: str = ""  # a checklist's own title (its H1), which names its game under any section
 
 
 def parse_backlog(text: str) -> list[Bullet]:
@@ -102,9 +104,14 @@ def parse_checklist(text: str) -> list[RoadmapItem]:
 
 
 def parse_roadmap(text: str, title_section: bool = False) -> list[RoadmapItem]:
+    """`- [ ]` items under their `##` sections. With `title_section` (a checklist) the file's
+    first `#` heading is the section until a `##` one, and every item keeps it as its title.
+    Lines inside a fenced code block (a shell `# comment`) are never headings or items."""
     items: list[RoadmapItem] = []
     section = ""
+    title = ""
     cur: dict | None = None
+    fenced = False
 
     def flush() -> None:
         if cur is not None:
@@ -114,15 +121,27 @@ def parse_roadmap(text: str, title_section: bool = False) -> list[RoadmapItem]:
                     text=" ".join(cur["text"])[:BODY_CAP],
                     done=cur["done"],
                     line=cur["line"],
+                    title=title,
                 )
             )
 
     for n, line in enumerate(text.splitlines(), start=1):
+        if _FENCE.match(line):
+            fenced = not fenced
+            if cur is not None and not line.startswith("  "):
+                flush()
+                cur = None
+            continue
+        if fenced:
+            continue
         h = _HEADING.match(line)
-        if h and (len(h.group(1)) >= 2 or (title_section and len(h.group(1)) == 1)):
+        level = len(h.group(1)) if h else 0
+        if h and (level >= 2 or (title_section and level == 1 and not title)):
             flush()
             cur = None
             section = h.group(2)
+            if level == 1:
+                title = h.group(2)
             continue
         m = _CHECK.match(line)
         if m:

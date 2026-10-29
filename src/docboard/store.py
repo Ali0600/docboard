@@ -547,23 +547,29 @@ class Store:
     def _renames(self, vanished: list, fresh: list, now: str, report: ApplyReport) -> None:
         """A reworded doc item is the same card: carry the owner's moves over to its new id."""
         db = self.db
-        taken: set[str] = set()
-        for old in vanished:
-            best, key = None, None
-            if old["kind"] in DOC_KINDS:
-                for new in fresh:
-                    if new.kind != old["kind"] or new.id in taken:
-                        continue
-                    s = jaccard(old["title"], new.title)
-                    if s < RENAME_SAME:
-                        continue
-                    # Two bullets with one title: the one whose text also matches is the same.
-                    k = (s, jaccard(old["body"] or "", new.body or ""))
-                    if key is None or k > key:
-                        best, key = new, k
+        # Every (vanished, fresh) pair scored at once and matched best first, so when two
+        # bullets share a title the one whose text also matches wins, whichever comes first.
+        pairs = []
+        for i, old in enumerate(vanished):
+            if old["kind"] not in DOC_KINDS:
+                continue
+            for j, new in enumerate(fresh):
+                if new.kind != old["kind"]:
+                    continue
+                s = jaccard(old["title"], new.title)
+                if s >= RENAME_SAME:
+                    pairs.append(((s, jaccard(old["body"] or "", new.body or "")), i, j))
+        pairs.sort(key=lambda p: (p[0], -p[1], -p[2]), reverse=True)
+        match: dict[int, tuple[object, tuple[float, float]]] = {}
+        taken: set[int] = set()
+        for key, i, j in pairs:
+            if i not in match and j not in taken:
+                match[i] = (fresh[j], key)
+                taken.add(j)
+        for i, old in enumerate(vanished):
+            best, key = match.get(i, (None, None))
             if best is not None:
                 score = key[0]
-                taken.add(best.id)
                 db.execute(
                     "INSERT OR REPLACE INTO alias (old_id, new_id, similarity, at)"
                     " VALUES (?, ?, ?, ?)",

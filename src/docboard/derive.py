@@ -239,7 +239,8 @@ class _Deriver:
             if doc.sub:
                 sub, reason = doc.sub, "path"
             else:
-                sub = self.att.by_text(item.section + " " + item.text)
+                # A checklist's own title names its game under any of its sections.
+                sub = self.att.by_text(" ".join((item.title, item.section, item.text)))
                 sub, reason = (sub, "title") if sub else ("", "root")
             self.cards.append(
                 Card(

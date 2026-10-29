@@ -481,3 +481,39 @@ def test_a_renamed_and_ticked_item_drops_the_stale_move(store: Store) -> None:
     store.apply(result([card("rm:b", "next", kind="roadmap", title="Ship the reward cards now")]),
                 now())  # fmt: skip
     assert col(store, "rm:b") == "next"  # unticked: the old dismissal does not come back
+
+
+# --- PR B, after review ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("other_first", [True, False])
+def test_removing_one_of_two_same_title_bullets_keeps_the_move_on_the_other(
+    store: Store, other_first: bool
+) -> None:
+    blue = card("bl:a", "ideas", title="Sky", body="a blue sky over the city")
+    lanterns = card("bl:c", "ideas", title="Sky", body="lanterns and a fair in the square")
+    store.apply(result([lanterns, blue] if other_first else [blue, lanterns]), now())
+    store.move("bl:a", "next", now())
+    survivor = card("bl:u", "ideas", title="Sky", body="a blue sky over the city")
+    store.apply(result([survivor]), now())  # the duplicate removed: the survivor is unsalted
+    assert col(store, "bl:u") == "next"
+    assert store.card("bl:c")["gone_at"] is not None
+
+
+def test_a_rename_matches_the_title_before_the_text(store: Store) -> None:
+    old = card("bl:a", "ideas", title="Sky over the city", body="blue")
+    store.apply(result([old]), now())
+    store.move("bl:a", "next", now())
+    same_title = card("bl:b", "ideas", title="Sky over the city", body="red")
+    same_text = card("bl:c", "ideas", title="Sky over the old city", body="blue")
+    store.apply(result([same_text, same_title]), now())
+    assert (col(store, "bl:b"), col(store, "bl:c")) == ("next", "ideas")
+
+
+def test_a_renamed_and_ticked_item_counts_as_following_its_source(store: Store) -> None:
+    store.apply(
+        result([card("rm:a", "next", kind="roadmap", title="Ship the reward cards")]), now()
+    )
+    store.dismiss("rm:a", now())
+    ticked = card("rm:b", "done", kind="roadmap", title="Ship the reward cards now")
+    assert store.apply(result([ticked]), now()).followed_source == 1

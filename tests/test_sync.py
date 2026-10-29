@@ -359,3 +359,24 @@ def test_a_backlog_bullet_the_parser_lost_is_warned_about(tmp_path: Path) -> Non
     repo = make_repo(tmp_path, {"docs/DECISIONS.md": lost})
     got = run(tmp_path, repo)
     assert any("3 Backlog bullets start but 2 were read" in w for w in got.warnings)
+
+
+def test_a_checklist_step_under_a_section_keeps_its_game(tmp_path: Path) -> None:
+    text = (
+        "# Alpha Game: going public\n\n- [ ] **1. Look.**\n\n## After going public\n\n"
+        "- [ ] **2. Post the codes.**\n"
+    )
+    repo = make_repo(
+        tmp_path,
+        {
+            "docs/DECISIONS.md": BACKLOG,
+            "docs/checklists/launch.md": text,
+            "docs/checklists/data/extra.md": "# Alpha Game\n\n- [ ] not read\n",
+            "docs/checklists/notes.txt": "- [ ] not read either\n",
+            "games/alpha/game.toml": 'name = "Alpha Game"\n',
+        },
+    )
+    got = run(tmp_path, repo)
+    steps = sorted((c.title, c.sub) for c in got.cards if c.kind == "roadmap")
+    assert steps == [("**1. Look.**", "alpha"), ("**2. Post the codes.**", "alpha")]
+    assert got.counts["checklist_items"] == 2

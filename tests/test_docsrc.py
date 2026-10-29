@@ -105,3 +105,47 @@ def test_checklist_steps_take_the_file_title_as_their_section() -> None:
         ("Later", False),
     ]
     assert items[0].text == "**1. Look at staging.** Play it on a phone too."
+
+
+def test_a_wrapped_titles_body_is_only_what_follows_it() -> None:
+    bullets = parse_backlog(WRAPPED)
+    assert bullets[0].body == "(2026-10-20): a wide one."
+    assert bullets[1].body == "(2026-10-21): sold in the shop. - **An unclosed title with no end"
+
+
+def test_a_title_never_wraps_past_a_blank_line_or_a_heading() -> None:
+    text = (
+        "## Backlog\n\n- **Open title\n\nclosed** here.\n- **Fine**: x.\n"
+        "- **Another open\n## Next\nclosed** there.\n"
+    )
+    assert [b.title for b in parse_backlog(text)] == ["Fine"]
+
+
+def test_bullet_starts_count_only_the_backlog_section() -> None:
+    text = (
+        "# D\n\n- **Before**: x.\n\n## Backlog\n\n- **In**: y.\n\n"
+        "## 2026-10-01 — X\n\n- **After**: z.\n"
+    )
+    assert docsrc.backlog_starts(text) == 1
+
+
+def test_a_roadmaps_title_is_never_its_section() -> None:
+    items = parse_roadmap("# Roadmap\n\n- [ ] Before any section.\n")
+    assert [(i.section, i.title) for i in items] == [("", "")]
+
+
+def test_a_code_fence_holds_neither_headings_nor_steps() -> None:
+    text = (
+        "# Alpha Game: going public\n\n- [ ] **1. Build.**\n\n```bash\n# from the repo root\n"
+        "- [ ] not a step\n```\n\n- [ ] **2. Look.**\n"
+    )
+    items = docsrc.parse_checklist(text)
+    assert [(i.text, i.section) for i in items] == [
+        ("**1. Build.**", "Alpha Game: going public"),
+        ("**2. Look.**", "Alpha Game: going public"),
+    ]
+
+
+def test_every_checklist_step_keeps_the_files_title() -> None:
+    items = docsrc.parse_checklist(CHECKLIST)
+    assert {i.title for i in items} == {"Alpha Game: going public"}
