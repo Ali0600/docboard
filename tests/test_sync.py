@@ -295,7 +295,7 @@ def test_describe_names_the_project_not_its_path(tmp_path: Path) -> None:
     home = Path.home()
     e = OSError(f"cannot read {tmp_path / 'repo' / 'x'} or {home / 'y'}\nsecond line")
     text = runner.describe(e, project)
-    assert text == "OSError: cannot read demo/x or ~/y"
+    assert text == f"OSError: cannot read demo{os.sep}x or ~{os.sep}y"  # the OS's own separator
 
 
 def test_dry_run_goes_on_past_a_broken_project(
