@@ -13,7 +13,7 @@ from pathlib import Path
 
 from docboard import __version__, config, locate, privacy, runner, sync
 from docboard.derive import COLUMNS
-from docboard.store import DEFAULT_DB, ApplyReport, FloorError
+from docboard.store import DEFAULT_DB, ApplyReport, FloorError, Store
 
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
 DEFAULT_PORT = 8742
@@ -138,6 +138,8 @@ def _report(project: config.Project, result: sync.SyncResult, report: ApplyRepor
         print(f"  {report.reopened} reopened: raised again after you resolved them")
     if report.adopted:
         print(f"  {report.adopted} moved here from another board")
+    if report.handed_over:
+        print(f"  {report.handed_over} handed to the board their work is on")
     if report.kept_open:
         print(f"  {report.kept_open} open asks kept although their transcript is gone")
     for w in report.warnings():
@@ -157,8 +159,8 @@ def _board(args: argparse.Namespace) -> int:
         return 2
     project, sub = found.project, found.sub
     status = 0
+    db = Path(args.db) if args.db else DEFAULT_DB
     if not args.no_sync:
-        db = Path(args.db) if args.db else DEFAULT_DB
         try:
             result, report = runner.run_sync(cfg, project, db)
         except (FloorError, runner.Busy, runner.SyncFailed) as e:
@@ -176,6 +178,12 @@ def _board(args: argparse.Namespace) -> int:
             if sub is not None and sub not in result.subs:
                 print(f"  {sub!r} has no board of its own yet; showing the whole project")
                 sub = None
+    if db.exists():
+        with Store(db) as store:
+            needs, new = store.summary(project.name, sub, datetime.now(UTC))
+            ok = store.last_run(project.name, ok_only=True)
+        names = json.loads(ok["sub_names"]) if ok else {}
+        print(f"{names.get(sub, sub) if sub else project.name}: {needs} need you, {new} new")
     url = locate.board_url(args.port, project.name, sub)
     print(f"board: {url}")
     state = locate.page_state(url)

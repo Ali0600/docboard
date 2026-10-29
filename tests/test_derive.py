@@ -438,3 +438,23 @@ def test_a_plan_without_github_leaves_next_once_its_session_moves_on(tmp_path: P
     ]
     got = derived(two_files(tmp_path, recs, []), github=None)
     assert (got["pl:p1"].column, got["pl:p2"].column) == (D.DONE, D.IN_PROGRESS)
+
+
+def test_answers_with_no_plan_are_kept_for_their_session(tmp_path: Path) -> None:
+    q = {"questions": [{"question": "Which way?"}]}
+    recs = [
+        f.tool_use(S, "u1", "2026-10-26T09:00:00Z", "AskUserQuestion", "q1", q),
+        f.tool_result(
+            S, "r1", "2026-10-26T09:01:00Z", "q1", "ok", {"answers": {"Which way?": "Left"}}
+        ),
+    ]
+    proj = tmp_path / "projects" / T.encode_path(f.ROOT)
+    f.write(proj / f"{S}.jsonl", recs)
+    scan = T.scan_project(f.ROOT, tmp_path / "projects")
+    extras: dict = {}
+    D.derive(
+        D.Inputs(project="demo", github="acme/demo", attributor=att(), backlog=[], roadmap=[],
+                 prs=[], squash={}, scan=scan, now=NOW),
+        extras=extras,
+    )  # fmt: skip
+    assert extras["sessions"][S]["decided"] == ["Which way? → Left"]

@@ -24,15 +24,34 @@ def env(tmp_path: Path) -> tuple[TestClient, Path]:
     cfg = Config(projects=(Project(name="demo", path=repo),), claude_home=tmp_path / "claude")
     db = tmp_path / "data" / "board.db"
     with Store(db) as s:
-        s.apply(result([
-            card("ny:1", "needs_you", kind="needs", title="<script>alert(1)</script> set the token",
-                 body="see javascript:alert(1) and https://example.com/x."),
-            card("ny:old", "needs_you", kind="needs", title="An old ask", older=True),
-            card("ny:b", "needs_you", kind="needs", title="A beta ask", sub="beta"),
-            card("bl:1", "ideas", title="A pole swing",
-                 source={"path": "docs/DECISIONS.md", "line": 5, "ref_sha": "abc123"}),
-            card("bl:2", "ideas", title="Outside", source={"path": "../../secrets.txt", "line": 1}),
-        ]), now())  # fmt: skip
+        s.apply(
+            result(
+                [
+                    card(
+                        "ny:1",
+                        "needs_you",
+                        kind="needs",
+                        title="<script>alert(1)</script> set the token",
+                        body="see javascript:alert(1) and https://example.com/x.",
+                    ),
+                    card("ny:old", "needs_you", kind="needs", title="An old ask", older=True),
+                    card("ny:b", "needs_you", kind="needs", title="A beta ask", sub="beta"),
+                    card(
+                        "bl:1",
+                        "ideas",
+                        title="A pole swing",
+                        source={"path": "docs/DECISIONS.md", "line": 5, "ref_sha": "abc123"},
+                    ),
+                    card(
+                        "bl:2",
+                        "ideas",
+                        title="Outside",
+                        source={"path": "../../secrets.txt", "line": 1},
+                    ),
+                ]
+            ),
+            now(),
+        )
     client = TestClient(create_app(cfg, db, PORT), base_url=BASE, follow_redirects=False)
     return client, db
 
@@ -167,11 +186,13 @@ def test_triage_filters_by_game(env: tuple[TestClient, Path]) -> None:
 
 def test_select_all_checks_every_box_without_script(env: tuple[TestClient, Path]) -> None:
     client, _ = env
-    boxes = re.findall(r'<input type="checkbox" name="ids"[^>]*>', client.get(
-        "/p/demo/triage?select=all").text)  # fmt: skip
+    boxes = re.findall(
+        r'<input type="checkbox" name="ids"[^>]*>', client.get("/p/demo/triage?select=all").text
+    )
     assert len(boxes) == 3 and all("checked" in b for b in boxes)
-    plain = re.findall(r'<input type="checkbox" name="ids"[^>]*>', client.get(
-        "/p/demo/triage").text)  # fmt: skip
+    plain = re.findall(
+        r'<input type="checkbox" name="ids"[^>]*>', client.get("/p/demo/triage").text
+    )
     assert not any("checked" in b for b in plain)
 
 
@@ -205,7 +226,7 @@ def test_a_failing_background_sync_shows_and_is_not_restarted(tmp_path: Path) ->
         s.apply(result([card("bl:1", "ideas")]), now(-1))  # a day old: the page refreshes it
     app = create_app(cfg, db, PORT)
     client = TestClient(app, base_url=BASE, follow_redirects=False)
-    client.get("/p/demo")
+    client.get("/p/demo", headers={"Sec-Fetch-Site": "none"})
     assert app.state.board.join(timeout=20)
     page = client.get("/p/demo").text
     assert "The last sync failed" in page and "GitError" in page
@@ -279,8 +300,9 @@ def test_the_undo_notice_shows_only_numbers(env: tuple[TestClient, Path]) -> Non
 
 def test_triage_keeps_its_game_across_a_post_and_reads_root(env: tuple[TestClient, Path]) -> None:
     client, db = env
-    r = client.post("/p/demo/triage", data={"action": "dismiss", "ids": ["ny:b"], "sub": "beta"},
-                    headers=SAME)  # fmt: skip
+    r = client.post(
+        "/p/demo/triage", data={"action": "dismiss", "ids": ["ny:b"], "sub": "beta"}, headers=SAME
+    )
     assert r.headers["location"] == "/p/demo/triage?sub=beta"
     with Store(db) as s:
         s.apply(
@@ -291,8 +313,10 @@ def test_triage_keeps_its_game_across_a_post_and_reads_root(env: tuple[TestClien
 
 
 def test_triage_moves_only_this_boards_cards(tmp_path: Path) -> None:
-    cfg = Config(projects=(Project(name="one", path=tmp_path), Project(name="two", path=tmp_path)),
-                 claude_home=tmp_path / "c")  # fmt: skip
+    cfg = Config(
+        projects=(Project(name="one", path=tmp_path), Project(name="two", path=tmp_path)),
+        claude_home=tmp_path / "c",
+    )
     db = tmp_path / "data" / "board.db"
     with Store(db) as s:
         s.apply(result([card("ny:1", "needs_you", kind="needs")], project="one"), now())
@@ -314,8 +338,15 @@ def test_badges_for_a_reopened_ask_and_a_gone_transcript(tmp_path: Path) -> None
         r.sessions = {"s9"}
         s.apply(r, now())
         s.dismiss("ny:1", now(-2))
-        again = card("ny:1", "needs_you", kind="needs", title="Reopened", event_at=now(-3),
-                     raised=2, raised_at=now(-1))  # fmt: skip
+        again = card(
+            "ny:1",
+            "needs_you",
+            kind="needs",
+            title="Reopened",
+            event_at=now(-3),
+            raised=2,
+            raised_at=now(-1),
+        )
         s.apply(result([again]), now())  # and ny:2's transcript is gone
     client = TestClient(create_app(cfg, db, PORT), base_url=BASE, follow_redirects=False)
     page = client.get("/p/demo").text
@@ -354,7 +385,297 @@ def test_a_plan_file_must_sit_inside_the_plans_folder() -> None:
 
     plans = Path("/" + "srv/claude/plans")
     assert _inside(str(plans / "a.md"), plans)
-    for outside in (plans / ".." / "secret.md", plans.parent / "x.md",
-                    Path(str(plans) + "-evil") / "x.md"):  # fmt: skip
+    for outside in (
+        plans / ".." / "secret.md",
+        plans.parent / "x.md",
+        Path(str(plans) + "-evil") / "x.md",
+    ):
         assert not _inside(str(outside), plans), outside
     assert not _inside("bad\0path", plans)  # a path the OS refuses reads as outside
+
+
+# --- PR D: the page shows what it hides -----------------------------------------------------
+
+
+def test_hidden_cards_are_listed_on_request(env: tuple[TestClient, Path]) -> None:
+    client, db = env
+    with Store(db) as s:
+        s.dismiss("bl:1", now())
+    assert "A pole swing" not in client.get("/p/demo?ideas=1").text
+    page = client.get("/p/demo?hidden=1").text
+    assert 'aria-label="Hidden"' in page and "A pole swing" in page
+
+
+def test_gone_cards_are_listed_with_their_links(env: tuple[TestClient, Path]) -> None:
+    client, db = env
+    with Store(db) as s:
+        rows = (
+            ("ny:1", "needs_you", "needs", "x"),
+            ("ny:old", "needs_you", "needs", "An old ask"),
+            ("ny:b", "needs_you", "needs", "A beta ask"),
+            ("bl:1", "ideas", "idea", "A pole swing"),
+        )
+        keep = [card(i, c, kind=k, title=t) for i, c, k, t in rows]
+        s.apply(result(keep), now())
+    page = client.get("/p/demo").text
+    assert "1 gone from their sources" in page and 'href="/i/bl%3A2"' in page
+
+
+def test_an_old_card_link_follows_its_rename(tmp_path: Path) -> None:
+    cfg = Config(projects=(Project(name="demo", path=tmp_path),), claude_home=tmp_path / "c")
+    db = tmp_path / "data" / "board.db"
+    with Store(db) as s:
+        s.apply(result([card("bl:a", "ideas", title="A pole swing for the city")]), now())
+        s.apply(result([card("bl:b", "ideas", title="A pole swing for the whole city")]), now())
+    client = TestClient(create_app(cfg, db, PORT), base_url=BASE, follow_redirects=False)
+    r = client.get("/i/bl:a")
+    assert r.status_code == 303 and r.headers["location"] == "/i/bl%3Ab"
+    assert client.get("/i/bl:nothing").status_code == 404
+
+
+def test_ideas_fold_in_the_all_view(env: tuple[TestClient, Path]) -> None:
+    client, _ = env
+    page = client.get("/p/demo").text
+    assert "A pole swing" not in page and "2 ideas" in page
+    assert "A pole swing" in client.get("/p/demo?ideas=1").text
+    assert "A pole swing" in client.get("/p/demo?sub=alpha").text
+
+
+def test_titles_render_without_markdown(tmp_path: Path) -> None:
+    cfg = Config(projects=(Project(name="demo", path=tmp_path),), claude_home=tmp_path / "c")
+    db = tmp_path / "data" / "board.db"
+    title = "**Bold** move and `code` and [a link](https://x.example/y)"
+    with Store(db) as s:
+        s.apply(result([card("ny:1", "needs_you", kind="needs", title=title)]), now())
+    client = TestClient(create_app(cfg, db, PORT), base_url=BASE, follow_redirects=False)
+    page = client.get("/p/demo").text
+    assert "Bold move and code and a link" in page and "**Bold**" not in page
+
+
+def test_games_show_their_names(env: tuple[TestClient, Path]) -> None:
+    client, db = env
+    r = result([card("ny:1", "needs_you", kind="needs", title="x")])
+    r.sub_names = {"alpha": "Alpha Game"}
+    with Store(db) as s:
+        s.apply(r, now())
+    page = client.get("/p/demo").text
+    assert ">Alpha Game" in page and ">alpha<" not in page
+
+
+def test_new_cards_are_marked_until_you_mark_them_seen(env: tuple[TestClient, Path]) -> None:
+    client, db = env
+    assert 'class="badge new"' in client.get("/p/demo").text  # synced just now, never seen
+    assert client.post("/p/demo/seen", data={}, headers=SAME).status_code == 303
+    assert 'class="badge new"' not in client.get("/p/demo").text
+    with Store(db) as s:
+        fresh = card("ny:2", "needs_you", kind="needs", title="Fresh ask")
+        s.apply(result([card("ny:1", "needs_you", kind="needs"), fresh]), now(1))
+    page = client.get("/p/demo").text
+    assert page.count('class="badge new"') == 1 and "1 new" in page
+
+
+def test_a_page_refreshes_itself_while_its_sync_runs(env: tuple[TestClient, Path]) -> None:
+    client, _ = env
+    assert 'http-equiv="refresh"' not in client.get("/p/demo").text
+    client.app.state.board._syncing.add("demo")
+    assert 'http-equiv="refresh"' in client.get("/p/demo").text
+
+
+def test_an_unknown_game_says_so(env: tuple[TestClient, Path]) -> None:
+    client, _ = env
+    assert "No game named" in client.get("/p/demo?sub=nope").text
+    assert "No game named" not in client.get("/p/demo?sub=_root").text
+
+
+def test_only_the_boards_own_page_loads_start_a_sync(tmp_path: Path) -> None:
+    cfg = Config(projects=(Project(name="demo", path=tmp_path),), claude_home=tmp_path / "c")
+    db = tmp_path / "data" / "board.db"
+    with Store(db) as s:
+        s.apply(result([card("bl:1", "ideas")]), now(-1))  # stale
+    app = create_app(cfg, db, PORT)
+    client = TestClient(app, base_url=BASE, follow_redirects=False)
+    for site in ("cross-site", "same-site", None):
+        headers = {"Sec-Fetch-Site": site} if site else {}
+        client.get("/p/demo", headers=headers)  # an <img> on another page, or a script
+        assert not app.state.board._threads, site
+    client.get("/p/demo", headers={"Sec-Fetch-Site": "none"})  # typed in, or a bookmark
+    assert app.state.board._threads
+    app.state.board.join(timeout=20)
+
+
+def test_a_sessions_page_shows_its_cards_on_every_board_and_its_answers(tmp_path: Path) -> None:
+    cfg = Config(
+        projects=(Project(name="one", path=tmp_path), Project(name="two", path=tmp_path)),
+        claude_home=tmp_path / "c",
+    )
+    db = tmp_path / "data" / "board.db"
+    with Store(db) as s:
+        r = result(
+            [card("ny:1", "needs_you", kind="needs", title="Ask on one", source={"session": "s1"})],
+            project="one",
+        )
+        r.session_notes = {
+            "s1": {
+                "title": "The big run",
+                "decided": ["Which? → B"],
+                "first_at": now(-1),
+                "last_at": now(),
+            }
+        }
+        s.apply(r, now())
+        s.apply(
+            result(
+                [
+                    card(
+                        "ny:2",
+                        "needs_you",
+                        kind="needs",
+                        title="Ask on two",
+                        source={"session": "s1"},
+                    )
+                ],
+                project="two",
+            ),
+            now(),
+        )
+    client = TestClient(create_app(cfg, db, PORT), base_url=BASE, follow_redirects=False)
+    page = client.get("/s/s1").text
+    assert "The big run" in page and "Ask on one" in page and "Ask on two" in page
+    assert "Which? → B" in page
+    assert 'href="/s/s1"' in client.get("/i/ny:1").text
+    assert client.get("/s/nope").status_code == 404
+
+
+# --- PR D, after review ----------------------------------------------------------------------
+
+
+def two_board_client(tmp_path: Path) -> tuple[TestClient, Path]:
+    cfg = Config(
+        projects=(Project(name="one", path=tmp_path), Project(name="two", path=tmp_path)),
+        claude_home=tmp_path / "c",
+    )
+    db = tmp_path / "data" / "board.db"
+    Store(db).close()
+    return TestClient(create_app(cfg, db, PORT), base_url=BASE, follow_redirects=False), db
+
+
+def noted(project: str, decided: list[str], cards: list = ()) -> object:
+    r = result(list(cards), project=project)
+    r.session_notes = {
+        "s1": {"title": "The run", "decided": decided, "first_at": now(), "last_at": now()}
+    }
+    return r
+
+
+def test_a_sessions_answers_from_two_boards_are_both_kept(tmp_path: Path) -> None:
+    client, db = two_board_client(tmp_path)
+    with Store(db) as s:
+        s.apply(noted("one", ["Which? → A"]), now())
+        s.apply(noted("two", ["Where? → B"]), now())
+    page = client.get("/s/s1").text
+    assert "Which? → A" in page and "Where? → B" in page
+
+
+def test_a_sessions_answers_leave_once_a_plan_takes_them(tmp_path: Path) -> None:
+    client, db = two_board_client(tmp_path)
+    ask = card("ny:1", "needs_you", kind="needs", source={"session": "s1"})
+    with Store(db) as s:
+        s.apply(noted("one", ["Which? → A"], [ask]), now())
+        r = result([ask], project="one")
+        r.sessions = {"s1"}
+        s.apply(r, now())  # a later plan took the answer: no note any more
+    assert "Which? → A" not in client.get("/s/s1").text
+
+
+def test_a_gone_cards_session_page_still_answers(tmp_path: Path) -> None:
+    client, db = two_board_client(tmp_path)
+    with Store(db) as s:
+        s.apply(
+            result(
+                [card("pr:1", "done", kind="pr", title="Old PR", source={"session": "s1"})],
+                project="one",
+            ),
+            now(),
+        )
+        s.apply(result([], project="one"), now())
+    r = client.get("/s/s1")
+    assert r.status_code == 200 and "Old PR" in r.text
+
+
+def test_a_card_stored_after_the_mark_is_new(tmp_path: Path) -> None:
+    client, db = two_board_client(tmp_path)
+    with Store(db) as s:
+        s.mark_seen("one", now())
+        s.apply(result([card("ny:1", "needs_you", kind="needs")], project="one"), now(-1))
+    assert 'class="badge new"' in client.get("/p/one").text  # the sync started before the mark
+
+
+def test_mark_all_seen_counts_from_when_the_page_was_drawn(env: tuple[TestClient, Path]) -> None:
+    client, db = env
+    drawn = now(-0.001)
+    with Store(db) as s:
+        s.apply(
+            result(
+                [
+                    card("ny:1", "needs_you", kind="needs"),
+                    card("ny:late", "needs_you", kind="needs", title="Came in late"),
+                ]
+            ),
+            now(),
+        )
+    client.post("/p/demo/seen", data={"drawn": drawn}, headers=SAME)
+    page = client.get("/p/demo").text
+    assert page.count('class="badge new"') >= 1  # cards stored after the page was drawn stay new
+    client.post("/p/demo/seen", data={"drawn": "not a time"}, headers=SAME)
+    assert 'class="badge new"' not in client.get("/p/demo").text
+
+
+def test_a_reworded_idea_is_not_new(tmp_path: Path) -> None:
+    client, db = two_board_client(tmp_path)
+    with Store(db) as s:
+        s.apply(
+            result([card("bl:a", "ideas", title="A pole swing for the city")], project="one"), now()
+        )
+        s.mark_seen("one", now())
+        s.apply(
+            result([card("bl:b", "ideas", title="A pole swing for the whole city")], project="one"),
+            now(1),
+        )
+    assert 'class="badge new"' not in client.get("/p/one?ideas=1").text
+
+
+def test_a_finished_sync_is_not_restarted_by_the_reload(tmp_path: Path) -> None:
+    client, db = two_board_client(tmp_path)
+    with Store(db) as s:
+        s.apply(result([], project="one"), now(-1))  # its start is long past: stale
+    board = client.app.state.board
+    board._finished["one"] = __import__("time").monotonic()  # but it just finished
+    client.get("/p/one", headers={"Sec-Fetch-Site": "none"})
+    assert not board._threads
+
+
+def test_the_gone_list_follows_the_game(env: tuple[TestClient, Path]) -> None:
+    client, db = env
+    with Store(db) as s:
+        s.apply(result([card("bl:1", "ideas", title="A pole swing")]), now())
+    assert "A beta ask" in client.get("/p/demo").text.split("gone from their sources")[-1]
+    assert "A beta ask" not in client.get("/p/demo?sub=alpha").text
+
+
+def test_pages_name_games_and_cap_an_unknown_one(env: tuple[TestClient, Path]) -> None:
+    client, db = env
+    r = result([card("ny:1", "needs_you", kind="needs", title="x")])
+    r.sub_names = {"alpha": "Alpha Game"}
+    with Store(db) as s:
+        s.apply(r, now())
+    assert "Alpha Game" in client.get("/i/ny:1").text
+    assert "Alpha Game" in client.get("/p/demo/triage").text
+    page = client.get("/p/demo?sub=" + "x" * 300).text
+    (shown,) = re.findall(r"No game named “([^”]*)”", page)
+    assert shown == "x" * 40 + "…"
+
+
+def test_a_link_whose_address_has_parentheses_keeps_its_text() -> None:
+    from docboard.web import plain
+
+    assert plain("see [the doc](https://x.example/a_(b)) now") == "see the doc now"

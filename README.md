@@ -29,8 +29,15 @@ idea,roadmap --strict` proves a docs move kept every card id; `docboard privacy`
 for personal identifiers.
 
 Only the projects listed in `config/projects.toml` are read. The database and `--json` files hold
-your own sessions' text, so they are owner-only (mode 600) and `data/` is git-ignored. An open
-board older than two minutes refreshes itself in the background; "Sync now" does it at once.
+your own sessions' text, so they are owner-only (mode 600) and `data/` is git-ignored. Opening a
+board older than two minutes refreshes it in the background and the page reloads itself when the
+sync is done; "Sync now" does it at once.
+
+On the page: cards new since you last pressed "Mark all seen" are marked (and counted per game);
+the whole project's Ideas fold to a count per game until you open one; cards you hid are listed
+with `?hidden=1`, and cards gone from their sources at the foot; a session's own page (`/s/<id>`)
+lists its cards on every board and the answers that shaped no plan. `docboard board` prints how
+many asks wait in your game and how many cards are new.
 
 ## How it works
 

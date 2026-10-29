@@ -187,8 +187,18 @@ def test_board_prints_the_games_link_and_how_to_start_the_page(
 ) -> None:
     conf = write_config(tmp_path, repo)
     port = str(closed_port())
-    code = cli.main(["board", "--config", str(conf), "--cwd", str(repo / "games" / "alpha"),
-                     "--no-sync", "--port", port])  # fmt: skip
+    code = cli.main(
+        [
+            "board",
+            "--config",
+            str(conf),
+            "--cwd",
+            str(repo / "games" / "alpha"),
+            "--no-sync",
+            "--port",
+            port,
+        ]
+    )
     out = capsys.readouterr().out
     assert code == 0
     assert f"board: http://127.0.0.1:{port}/p/demo?sub=alpha" in out
@@ -211,8 +221,19 @@ def test_board_syncs_then_falls_back_when_the_game_has_no_board(
     port = str(closed_port())
     (repo / "games" / "gamma").mkdir()  # on disk, but no board yet
     for game, url in (("beta", "/p/demo?sub=beta"), ("gamma", "/p/demo\n")):
-        code = cli.main(["board", "--config", str(conf), "--cwd", str(repo / "games" / game),
-                         "--port", port, "--db", str(tmp_path / "board.db")])  # fmt: skip
+        code = cli.main(
+            [
+                "board",
+                "--config",
+                str(conf),
+                "--cwd",
+                str(repo / "games" / game),
+                "--port",
+                port,
+                "--db",
+                str(tmp_path / "board.db"),
+            ]
+        )
         out = capsys.readouterr().out
         assert code == 0
         assert f"127.0.0.1:{port}{url}" in out
@@ -229,8 +250,19 @@ def test_board_reports_a_refused_sync_and_still_gives_the_link(
         raise runner.Busy("another sync is running")
 
     monkeypatch.setattr(runner, "run_sync", busy)
-    code = cli.main(["board", "--config", str(conf), "--cwd", str(repo / "games" / "alpha"),
-                     "--port", str(closed_port()), "--db", str(tmp_path / "board.db")])  # fmt: skip
+    code = cli.main(
+        [
+            "board",
+            "--config",
+            str(conf),
+            "--cwd",
+            str(repo / "games" / "alpha"),
+            "--port",
+            str(closed_port()),
+            "--db",
+            str(tmp_path / "board.db"),
+        ]
+    )
     out = capsys.readouterr().out
     assert code == 1
     assert "sync not stored (another sync is running)" in out
@@ -246,9 +278,96 @@ def test_board_prints_the_link_when_the_sync_crashes(
         raise GitError("git log HEAD: fatal: bad object")
 
     monkeypatch.setattr(runner, "run_sync", crash)
-    code = cli.main(["board", "--config", str(conf), "--cwd", str(repo / "games" / "alpha"),
-                     "--port", str(closed_port()), "--db", str(tmp_path / "board.db")])  # fmt: skip
+    code = cli.main(
+        [
+            "board",
+            "--config",
+            str(conf),
+            "--cwd",
+            str(repo / "games" / "alpha"),
+            "--port",
+            str(closed_port()),
+            "--db",
+            str(tmp_path / "board.db"),
+        ]
+    )
     out = capsys.readouterr().out
     assert code == 1
     assert "sync not stored (GitError" in out
     assert "/p/demo?sub=alpha" in out
+
+
+def test_board_says_how_many_need_you_and_how_many_are_new(
+    repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conf = write_config(tmp_path, repo)
+    db = tmp_path / "board.db"
+
+    def fake_sync(c: Config, project: Project, path: Path, **kw: object) -> tuple:
+        from boardkit import card, now
+
+        r = result(
+            [
+                card("ny:1", "needs_you", kind="needs", sub="alpha"),
+                card("ny:2", "needs_you", kind="needs", sub="beta"),
+            ]
+        )
+        r.timings["total"] = 0.1
+        from docboard.store import Store
+
+        with Store(path) as s:
+            return r, s.apply(r, now())
+
+    monkeypatch.setattr(runner, "run_sync", fake_sync)
+    code = cli.main(
+        [
+            "board",
+            "--config",
+            str(conf),
+            "--cwd",
+            str(repo / "games" / "alpha"),
+            "--port",
+            str(closed_port()),
+            "--db",
+            str(db),
+        ]
+    )
+    assert code == 0
+    assert "alpha: 1 need you, 1 new" in capsys.readouterr().out
+
+
+def test_board_counts_match_the_pages_chips(
+    repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from boardkit import card, now
+
+    from docboard.store import Store
+
+    conf = write_config(tmp_path, repo)
+    db = tmp_path / "board.db"
+    with Store(db) as s:
+        r = result(
+            [
+                card("pl:1", "needs_you", kind="plan", sub="alpha"),
+                card("pr:2", "done", kind="pr", sub="alpha", parent="pl:1"),
+            ]
+        )
+        r.sub_names = {"alpha": "Alpha Game"}
+        s.apply(r, now())
+        s.add_manual("demo", "alpha", "needs_you", "Call the venue", "", now())
+    code = cli.main(
+        [
+            "board",
+            "--config",
+            str(conf),
+            "--cwd",
+            str(repo / "games" / "alpha"),
+            "--no-sync",
+            "--port",
+            str(closed_port()),
+            "--db",
+            str(db),
+        ]
+    )
+    assert code == 0
+    assert "Alpha Game: 2 need you, 2 new" in capsys.readouterr().out

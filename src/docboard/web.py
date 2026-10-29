@@ -27,7 +27,7 @@ from markupsafe import Markup, escape
 
 from docboard import runner
 from docboard.config import Config, Project
-from docboard.derive import COLUMNS, DONE, IN_PROGRESS, NEEDS_YOU, NEXT, RECENT
+from docboard.derive import COLUMNS, DONE, IDEAS, IN_PROGRESS, NEEDS_YOU, NEXT, RECENT
 from docboard.store import DEFAULT_DB, HIDDEN, FloorError, Store, StoreError
 
 HERE = Path(__file__).parent
@@ -41,6 +41,17 @@ CSP = (
     "connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
 )
 _URL = re.compile(r"https?://[^\s<>\"'`]+")
+_MD_LINK = re.compile(r"\[([^\]]*)\]\((?:[^()\s]|\([^()\s]*\))*\)")  # a URL may hold (…)
+# Page loads that start a background sync: the board's own pages, and an address typed in or a
+# bookmark. Never another site's <img> or a script (cross-site, same-site, or no header).
+OWN_LOADS = ("same-origin", "none")
+
+
+def plain(text: str) -> str:
+    """A title without its inline markdown (bold, code, links), for display only: stored titles
+    and the ids made from them stay as they are."""
+    t = _MD_LINK.sub(r"\1", text or "")
+    return t.replace("**", "").replace("`", "")
 
 
 def linkify(text: str) -> Markup:
@@ -95,6 +106,7 @@ class Board:
         self.origins = {f"http://{h}" for h in self.hosts}
         self._syncing: set[str] = set()
         self._threads: dict[str, threading.Thread] = {}
+        self._finished: dict[str, float] = {}  # when each project's last background sync ended
         self._guard = threading.Lock()
         self.subs: dict[str, list[str]] = {}
 
@@ -104,10 +116,17 @@ class Board:
     def store(self) -> Store:
         return Store(self.db_path)
 
-    def refresh_in_background(self, project: Project) -> threading.Thread | None:
-        """Starts one sync of the project unless one is already running; returns its thread."""
+    def refresh_in_background(
+        self, project: Project, force: bool = False
+    ) -> threading.Thread | None:
+        """Starts one sync of the project unless one is running, or (unless forced) one ended
+        in the last two minutes: a sync longer than that would otherwise be followed by
+        another at the page's next reload. Returns its thread."""
         with self._guard:
             if project.name in self._syncing:
+                return None
+            ended = self._finished.get(project.name)
+            if not force and ended is not None and time.monotonic() - ended < STALE_AFTER:
                 return None
             self._syncing.add(project.name)
 
@@ -124,6 +143,7 @@ class Board:
             finally:
                 with self._guard:
                     self._syncing.discard(project.name)
+                    self._finished[project.name] = time.monotonic()
 
         thread = threading.Thread(target=work, name=f"sync-{project.name}", daemon=True)
         with self._guard:
@@ -166,6 +186,7 @@ def _card_view(row: object, now: datetime) -> dict:
         "reopened": bool(get("reopened_at")) and row["col"] == NEEDS_YOU,
         "reopened_was": get("reopened_was"),
         "source_gone": bool(get("source_gone_at")) and not get("gone_at"),
+        "first_seen": get("first_seen") or get("created_at") or "",
         "parent": get("parent"),
         "children": json.loads(get("children", "[]")),
         "moved": bool(get("moved", 0)),
@@ -179,6 +200,7 @@ def create_app(cfg: Config, db_path: Path = DEFAULT_DB, port: int = 8742) -> Fas
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     templates = Jinja2Templates(directory=str(HERE / "templates"))
     templates.env.filters["linkify"] = linkify
+    templates.env.filters["plain"] = plain
     templates.env.globals["COLUMN_NAMES"] = COLUMN_NAMES
     app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
     app.state.board = board
@@ -224,7 +246,7 @@ def create_app(cfg: Config, db_path: Path = DEFAULT_DB, port: int = 8742) -> Fas
 
     @app.get("/p/{name}", response_class=HTMLResponse)
     def project_board(request: Request, name: str, sub: str = "", older: int = 0,
-                      done: str = "", hidden: int = 0) -> Response:  # fmt: skip
+                      done: str = "", hidden: int = 0, ideas: int = 0) -> Response:  # fmt: skip
         project = board.project(name)
         if project is None:
             return not_found("project")
@@ -236,48 +258,101 @@ def create_app(cfg: Config, db_path: Path = DEFAULT_DB, port: int = 8742) -> Fas
                 last is None
                 or (t - datetime.fromisoformat(last["started"])).total_seconds() > STALE_AFTER
             )
-            if stale:
+            if stale and request.headers.get("sec-fetch-site") in OWN_LOADS:
                 board.refresh_in_background(project)
             rows = [_card_view(r, t) for r in store.cards(name)]
             manual = [_card_view(_ManualRow(m), t) for m in store.manual(name)]
-            gone = len(store.gone(name))
+            gone = [c for c in (_card_view(r, t) for r in store.gone(name)) if _in_sub(c, sub)]
             subs, _ = store.known(name)
+            since = store.new_since(name, t)
+            names = json.loads(last_ok["sub_names"]) if last_ok else {}
         by_id = {c["id"]: c for c in rows}
         visible = [c for c in rows + manual if c["parent"] is None]
-
+        for c in visible:
+            c["new"] = c["col"] != HIDDEN and _after(c["first_seen"], since)
         in_sub = [c for c in visible if _in_sub(c, sub)]
         cutoff = t - RECENT
+        shown_cols = [*COLUMNS, HIDDEN] if hidden else list(COLUMNS)
         columns = []
-        for col in COLUMNS:
+        for col in shown_cols:
             all_here = [c for c in in_sub if c["col"] == col]
             shown = all_here
-            folded = 0
+            per_game: list[tuple[str, str, int]] = []
             if col in (NEEDS_YOU, NEXT) and not older:
                 shown = [c for c in all_here if not c["older"]]
             elif col == DONE and done != "all":
                 shown = [c for c in all_here if c["event_at"] and _after(c["event_at"], cutoff)]
+            elif col == IDEAS and not sub and not ideas:
+                # The whole project's Backlog is most of a board: counted per game until asked.
+                shown = []
+                counts: dict[str, int] = {}
+                for c in all_here:
+                    counts[c["sub"]] = counts.get(c["sub"], 0) + 1
+                per_game = [(k or "_root", names.get(k, k) or project.root_name, n)
+                            for k, n in sorted(counts.items())]  # fmt: skip
             folded = len(all_here) - len(shown)
             shown.sort(key=lambda c: c["event_at"], reverse=True)
             columns.append({"key": col, "name": COLUMN_NAMES[col], "cards": shown, "folded": folded,
-                            "total": len(all_here)})  # fmt: skip
+                            "total": len(all_here), "per_game": per_game})  # fmt: skip
         for c in rows:
             c["child_cards"] = [by_id[i] for i in c["children"] if i in by_id]
-        chips = [{"key": "", "label": "All", "needs": _needs(visible)}]
-        chips.append({"key": "_root", "label": project.root_name,
-                      "needs": _needs([c for c in visible if c["sub"] == ""])})  # fmt: skip
+
+        def chip(key: str, label: str, cards: list[dict]) -> dict:
+            return {"key": key, "label": label, "needs": _needs(cards),
+                    "new": sum(1 for c in cards if c["new"])}  # fmt: skip
+
+        chips = [chip("", "All", visible)]
+        chips.append(chip("_root", project.root_name, [c for c in visible if c["sub"] == ""]))
         for s in subs:
-            chips.append(
-                {"key": s, "label": s, "needs": _needs([c for c in visible if c["sub"] == s])}
-            )
+            chips.append(chip(s, names.get(s, s), [c for c in visible if c["sub"] == s]))
         back = str(request.url.path) + (("?" + request.url.query) if request.url.query else "")
         return templates.TemplateResponse(request, "board.html", {
             "project": project, "columns": columns, "chips": chips, "sub": sub, "older": older,
             "done": done, "last": last, "last_ok": last_ok, "syncing": board.syncing(name),
-            "gone": gone, "hidden": sum(1 for c in in_sub if c["col"] == HIDDEN), "back": back,
-            "movable": [*COLUMNS, HIDDEN], "subs": subs,
+            "gone": gone, "hidden": sum(1 for c in in_sub if c["col"] == HIDDEN),
+            "show_hidden": hidden, "back": back, "movable": [*COLUMNS, HIDDEN], "subs": subs,
+            "names": names, "unknown_sub": bool(sub) and sub != "_root" and sub not in subs,
+            "sub_shown": sub[:40] + ("…" if len(sub) > 40 else ""),
+            "new_total": sum(1 for c in in_sub if c["new"]), "drawn": t.isoformat(),
             "degraded": json.loads(last["degraded"]) if last else [],
             "warnings": json.loads(last["warnings"]) if last else [],
             "accept_cmd": runner.accept_command(name),
+        })  # fmt: skip
+
+    @app.post("/p/{name}/seen")
+    def mark_seen(
+        name: str, back: str = Form(default=""), drawn: str = Form(default="")
+    ) -> Response:
+        if board.project(name) is None:
+            return not_found("project")
+        # Seen means seen on the page: cards stored after it was drawn stay new.
+        t = now()
+        try:
+            at = datetime.fromisoformat(drawn)
+            at = at if at.tzinfo else at.replace(tzinfo=UTC)
+        except ValueError:
+            at = t
+        with board.store() as store:
+            store.mark_seen(name, min(at, t).isoformat())
+        return RedirectResponse(_safe_back(back, f"/p/{quote(name, safe='')}"), 303)
+
+    @app.get("/s/{session_id}", response_class=HTMLResponse)
+    def session_page(request: Request, session_id: str) -> Response:
+        t = now()
+        with board.store() as store:
+            notes = store.session_notes(session_id)
+            found = store.session_cards(session_id)
+        if not notes and not found:
+            return not_found("session")
+        cards = [_card_view(r, t) | {"project": r["project"], "gone": r["gone_at"] is not None}
+                 for r in found]  # fmt: skip
+        titles = [n["title"] for n in notes] + [
+            json.loads(r["source"]).get("session_title", "") for r in found
+        ]
+        decided = [d for n in notes for d in json.loads(n["decided"])]
+        return templates.TemplateResponse(request, "session.html", {
+            "session": session_id, "title": next((x for x in titles if x), ""), "cards": cards,
+            "decided": list(dict.fromkeys(decided)),
         })  # fmt: skip
 
     def triage_url(name: str, sub: str = "", **extra: object) -> str:
@@ -306,9 +381,11 @@ def create_app(cfg: Config, db_path: Path = DEFAULT_DB, port: int = 8742) -> Fas
                 [_card_view(r, t) for r in store.batch_cards(batch["id"])] if batch else []
             )
             subs, _ = store.known(name)
+            names = _names(store, name)
         older = [i for i in items if i["older"]]
         return templates.TemplateResponse(request, "triage.html", {
             "project": project, "items": items, "older": len(older), "sub": sub, "subs": subs,
+            "names": names,
             "select_all": select == "all",
             "confirm_items": older if confirm == "older" and older else None,
             "batch": batch, "batch_cards": batch_cards, "undone": undone_n, "kept": kept_n or 0,
@@ -347,7 +424,7 @@ def create_app(cfg: Config, db_path: Path = DEFAULT_DB, port: int = 8742) -> Fas
         project = board.project(name)
         if project is None:
             return not_found("project")
-        board.refresh_in_background(project)
+        board.refresh_in_background(project, force=True)
         return RedirectResponse(_safe_back(back, f"/p/{quote(name, safe='')}"), 303)
 
     @app.post("/p/{name}/cards")
@@ -369,6 +446,9 @@ def create_app(cfg: Config, db_path: Path = DEFAULT_DB, port: int = 8742) -> Fas
             row = store.card(card_id)
             manual = store.manual_card(card_id) if row is None else None
             if row is None and manual is None:
+                renamed = store.renamed_to(card_id)
+                if renamed is not None:  # a link from before the card was reworded
+                    return RedirectResponse("/i/" + quote(renamed, safe=""), 303)
                 return not_found("card")
             events = store.events(card_id)
             card = _card_view(row if row is not None else _ManualRow(manual), t)
@@ -383,9 +463,10 @@ def create_app(cfg: Config, db_path: Path = DEFAULT_DB, port: int = 8742) -> Fas
                 "evidence": row["evidence"] if row is not None else "",
             }
             subs, github = store.known(project.name) if project else ([], None)
+            names = _names(store, project.name) if project else {}
         links = _source_links(project, github, source) if project else {}
         return templates.TemplateResponse(request, "card.html", {
-            "card": card, "events": events, "children": children, "source": source,
+            "card": card, "events": events, "children": children, "source": source, "names": names,
             "links": links, "project": project, "movable": [*COLUMNS, HIDDEN], "subs": subs,
             **extra,
         })  # fmt: skip
@@ -465,6 +546,12 @@ class _ManualRow:
 def _count(value: str) -> int | None:
     """A count from a query parameter, or None for anything that is not one."""
     return int(value) if value.isdigit() and len(value) < 7 else None
+
+
+def _names(store: Store, project: str) -> dict[str, str]:
+    """The games' own names, as the last good sync read them."""
+    run = store.last_run(project, ok_only=True)
+    return json.loads(run["sub_names"]) if run else {}
 
 
 def _inside(path: str, folder: Path) -> bool:

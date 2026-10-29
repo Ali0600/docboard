@@ -1,13 +1,15 @@
 {% extends "base.html" %}
 {% block title %}{{ project.name }} · docboard{% endblock %}
+{% block head %}{% if syncing %}<meta http-equiv="refresh" content="4">{% endif %}{% endblock %}
 {% block crumbs %}<span class="crumb">{{ project.name }}</span>{% endblock %}
 
-{% macro card_box(c, movable, back, root_name) %}
+{% macro card_box(c, movable, back, root_name, names) %}
 <article class="card kind-{{ c.kind }}{% if c.moved %} moved{% endif %}" draggable="true"
          data-card-id="{{ c.id }}" data-move-url="{{ c.href }}/move">
-  <a class="title" href="{{ c.href }}">{{ c.title }}</a>
+  <a class="title" href="{{ c.href }}">{{ c.title|plain }}</a>
   <div class="meta">
-    <span class="sub">{{ c.sub or root_name }}</span>
+    {% if c.new %}<span class="badge new">new</span>{% endif %}
+    <span class="sub">{{ names.get(c.sub, c.sub) if c.sub else root_name }}</span>
     <span class="why" title="why it is on this game">{{ c.sub_reason }}</span>
     <span>{{ c.kind }}</span>
     {% if c.age %}<span>{{ c.age }} ago</span>{% endif %}
@@ -20,7 +22,7 @@
     {%- for b in c.badges %}<span class="badge">{{ b }}</span>{% endfor %}</div>{% endif %}
   {% if c.child_cards %}
   <ul class="children">
-    {% for ch in c.child_cards %}<li><a href="{{ ch.href }}">{{ ch.title }}</a> <span class="state state-{{ ch.col }}">{{ COLUMN_NAMES[ch.col] }}</span></li>{% endfor %}
+    {% for ch in c.child_cards %}<li><a href="{{ ch.href }}">{{ ch.title|plain }}</a> <span class="state state-{{ ch.col }}">{{ COLUMN_NAMES[ch.col] }}</span></li>{% endfor %}
   </ul>
   {% endif %}
   <form class="move" method="post" action="{{ c.href }}/move">
@@ -38,7 +40,7 @@
   <h1>{{ project.name }}</h1>
   <p class="muted">
     {% if last %}Last sync {{ last.started[:16].replace("T", " ") }} UTC, {{ last.status }}{% if last.ref_sha %}, docs at {{ last.ref_sha[:8] }}{% endif %}.{% else %}Not synced yet.{% endif %}
-    {% if syncing %}<strong>Refreshing from the sources: reload in a few seconds.</strong>{% endif %}
+    {% if syncing %}<strong>Refreshing from the sources: this page reloads by itself.</strong>{% endif %}
   </p>
   {% set shown = (" The board shows the sync of " ~ last_ok.started[:16].replace("T", " ") ~ " UTC.") if last_ok else "" %}
   {% if last and last.status == "failed" %}
@@ -65,24 +67,35 @@
         <input type="hidden" name="back" value="{{ back }}">
         <input name="title" required maxlength="200" placeholder="Title" aria-label="Title">
         <select name="col" aria-label="Column">{% for k, v in COLUMN_NAMES.items() if k != "hidden" %}<option value="{{ k }}"{% if k == "next" %} selected{% endif %}>{{ v }}</option>{% endfor %}</select>
-        <select name="sub" aria-label="Game"><option value="">{{ project.root_name }}</option>{% for s in subs %}<option value="{{ s }}"{% if s == sub %} selected{% endif %}>{{ s }}</option>{% endfor %}</select>
+        <select name="sub" aria-label="Game"><option value="">{{ project.root_name }}</option>{% for s in subs %}<option value="{{ s }}"{% if s == sub %} selected{% endif %}>{{ names.get(s, s) }}</option>{% endfor %}</select>
         <button type="submit">Add</button>
       </form>
     </details>
   </div>
   <nav class="chips" aria-label="Games">
     {% for chip in chips %}
-    <a class="chip{% if chip.key == sub %} on{% endif %}" href="?sub={{ chip.key|urlencode }}">{{ chip.label }}{% if chip.needs %} <span class="n">{{ chip.needs }}</span>{% endif %}</a>
+    <a class="chip{% if chip.key == sub %} on{% endif %}" href="?sub={{ chip.key|urlencode }}">{{ chip.label }}{% if chip.needs %} <span class="n">{{ chip.needs }}</span>{% endif %}{% if chip.new %} <span class="n new">{{ chip.new }} new</span>{% endif %}</a>
     {% endfor %}
   </nav>
+  {% if unknown_sub %}<p class="warn">No game named “{{ sub_shown }}” on this board (renamed, or not on its branch yet): nothing to show here.</p>{% endif %}
+  {% if new_total %}
+  <form class="seen" method="post" action="/p/{{ project.name|urlencode }}/seen">
+    <input type="hidden" name="back" value="{{ back }}">
+    <input type="hidden" name="drawn" value="{{ drawn }}">
+    {{ new_total }} new since you last marked the board seen. <button type="submit">Mark all seen</button>
+  </form>
+  {% endif %}
 </section>
 
 <div class="columns">
   {% for col in columns %}
   <section class="column" data-column="{{ col.key }}" aria-label="{{ col.name }}">
     <h2>{{ col.name }} <span class="muted">{{ col.cards|length }}{% if col.folded %} of {{ col.total }}{% endif %}</span></h2>
-    {% for c in col.cards %}{{ card_box(c, movable, back, project.root_name) }}{% endfor %}
-    {% if col.folded %}
+    {% for c in col.cards %}{{ card_box(c, movable, back, project.root_name, names) }}{% endfor %}
+    {% if col.per_game %}
+    <p class="folded">{{ col.total }} ideas: {% for key, label, n in col.per_game %}<a href="?sub={{ key|urlencode }}">{{ label }} {{ n }}</a>{{ ", " if not loop.last }}{% endfor %}.
+      <a href="?ideas=1">Show them all</a></p>
+    {% elif col.folded %}
     <p class="folded">
       {% if col.key == "done" %}<a href="?sub={{ sub|urlencode }}&amp;done=all">Show all {{ col.total }}</a>
       {% else %}<a href="?sub={{ sub|urlencode }}&amp;older=1">Older ({{ col.folded }})</a>{% endif %}
@@ -92,8 +105,12 @@
   {% endfor %}
 </div>
 <p class="muted foot">
-  {% if hidden %}{{ hidden }} hidden by you. {% endif %}
-  {% if gone %}{{ gone }} gone from their sources. {% endif %}
+  {% if hidden and not show_hidden %}<a href="?sub={{ sub|urlencode }}&amp;hidden=1">{{ hidden }} hidden by you</a>. {% endif %}
   Cards come from the docs, PRs, plans and sessions; a move you make holds until its source changes.
 </p>
+{% if gone %}
+<details class="gone foot"><summary>{{ gone|length }} gone from their sources</summary>
+  <ul>{% for c in gone %}<li><a href="{{ c.href }}">{{ c.title|plain }}</a> <span class="muted">{{ c.kind }}</span></li>{% endfor %}</ul>
+</details>
+{% endif %}
 {% endblock %}

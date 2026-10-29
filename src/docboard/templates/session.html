@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Session · docboard{% endblock %}
+{% block crumbs %}<span class="crumb">session</span>{% endblock %}
+{% block main %}
+<article class="detail">
+  <h1>{{ title or "A session" }}</h1>
+  <p class="muted">Session {{ session }}: everything the boards hold from it.</p>
+  {% if decided %}
+  <h2>Answers that shaped no plan</h2>
+  <ul>{% for d in decided %}<li>{{ d }}</li>{% endfor %}</ul>
+  {% endif %}
+  {% if cards %}
+  <h2>Its cards</h2>
+  <ul class="triage">
+    {% for c in cards %}
+    <li><a href="{{ c.href }}">{{ c.title|plain }}</a>
+      <span class="muted">{{ c.project }} · {{ c.kind }} · {% if c.gone %}gone from its source{% else %}{{ COLUMN_NAMES[c.col] }}{% endif %}{% if c.age %} · {{ c.age }} ago{% endif %}</span></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</article>
+{% endblock %}

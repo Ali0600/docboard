@@ -15,7 +15,7 @@ import uuid
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from docboard.config import REPO_ROOT
@@ -27,6 +27,7 @@ DEFAULT_DB = REPO_ROOT / "data" / "board.db"
 HIDDEN = "hidden"
 MOVABLE = (*COLUMNS, HIDDEN)
 RENAME_SAME = 0.6
+NEW_WINDOW = timedelta(hours=24)  # "new" before the owner ever marked the board seen
 DOC_KINDS = ("idea", "roadmap")
 # Kinds that wait on the owner: while one sits in Needs you, it stays there even after its
 # transcript is deleted (Claude Code removes old transcripts after 30 days by default).
@@ -147,6 +148,22 @@ MIGRATIONS: tuple[str, ...] = (
         first_at TEXT,
         last_at TEXT
     );
+    """,
+    # A session's answers kept per board: two boards noting one session no longer overwrite
+    # each other (the review of 2026-10-28).
+    """
+    CREATE TABLE session_note (
+        id TEXT NOT NULL,
+        project TEXT NOT NULL,
+        title TEXT NOT NULL,
+        decided TEXT NOT NULL,
+        first_at TEXT,
+        last_at TEXT,
+        PRIMARY KEY (id, project)
+    );
+    INSERT INTO session_note SELECT id, project, title, decided, first_at, last_at FROM session;
+    DROP TABLE session;
+    ALTER TABLE session_note RENAME TO session;
     """,
 )
 
@@ -343,6 +360,16 @@ class Store:
         message = ("accepted drop: " + "; ".join(accepted.values())) if accepted else ""
         with self.tx():
             self._apply(result, now, frozen, report)
+            # This board's notes are what this sync found: an answer a later plan took leaves.
+            self.db.execute("DELETE FROM session WHERE project = ?", (result.project,))
+            for sid, note in result.session_notes.items():
+                self.db.execute(
+                    "INSERT OR REPLACE INTO session (id, project, title, decided, first_at,"
+                    " last_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (sid, result.project, note.get("title", ""),
+                     json.dumps(note.get("decided", []), ensure_ascii=False),
+                     note.get("first_at"), note.get("last_at")),
+                )  # fmt: skip
             self._run(result, now, "ok", message, warnings=report.warnings(), in_tx=True)
         return report
 
@@ -396,6 +423,9 @@ class Store:
 
     def _apply(self, result: SyncResult, now: str, frozen: set[str], report: ApplyReport) -> None:
         db = self.db
+        # A card is first seen when it is stored, not when its sync started: a "Mark all seen"
+        # made while the sync was reading must not hide what it brings.
+        stored = datetime.now(UTC).isoformat()
         existing = {
             r["id"]: r
             for r in db.execute("SELECT * FROM board WHERE project = ?", (result.project,))
@@ -429,7 +459,7 @@ class Store:
                 db.execute(
                     f"INSERT INTO card (id, project, {cols}, first_seen, last_seen)"  # noqa: S608
                     f" VALUES (?, ?, {marks}, ?, ?)",
-                    (card.id, result.project, *(row[f] for f in _CARD_FIELDS), now, now),
+                    (card.id, result.project, *(row[f] for f in _CARD_FIELDS), stored, now),
                 )
                 report.added += 1
                 fresh.append(card)
@@ -608,6 +638,9 @@ class Store:
                         (best.id, old["id"]),
                     )
                 db.execute("UPDATE event SET card_id = ? WHERE card_id = ?", (best.id, old["id"]))
+                db.execute(  # the same card reworded: not new
+                    "UPDATE card SET first_seen = ? WHERE id = ?", (old["first_seen"], best.id)
+                )
                 self._event(now, "sync", best.id, "renamed", detail)
                 db.execute("DELETE FROM card WHERE id = ?", (old["id"],))
                 report.renamed += 1
@@ -638,6 +671,74 @@ class Store:
 
     def card(self, card_id: str) -> sqlite3.Row | None:
         return self.db.execute("SELECT * FROM board WHERE id = ?", (card_id,)).fetchone()
+
+    def renamed_to(self, card_id: str, hops: int = 5) -> str | None:
+        """The card an old id became through renames (followed a few steps), or None."""
+        seen = {card_id}
+        for _ in range(hops):
+            row = self.db.execute(
+                "SELECT new_id FROM alias WHERE old_id = ?", (card_id,)
+            ).fetchone()
+            if row is None or row["new_id"] in seen:
+                break
+            card_id = row["new_id"]
+            seen.add(card_id)
+            if self.card(card_id) is not None:
+                return card_id
+        return None
+
+    def session_notes(self, session_id: str) -> list[sqlite3.Row]:
+        """Each board's note of one session (its title, the answers no plan there took)."""
+        return list(self.db.execute(
+            "SELECT * FROM session WHERE id = ? ORDER BY project", (session_id,)
+        ))  # fmt: skip
+
+    def session_cards(self, session_id: str) -> list[sqlite3.Row]:
+        """Every board's cards from one session, its PRs and plans included, gone ones too."""
+        return list(self.db.execute(
+            "SELECT * FROM board WHERE json_extract(source, '$.session') = ?"
+            " ORDER BY gone_at IS NOT NULL, project, event_at",
+            (session_id,),
+        ))  # fmt: skip
+
+    def seen_mark(self, project: str) -> str | None:
+        row = self.db.execute(
+            "SELECT last_seen_at FROM visit WHERE project = ?", (project,)
+        ).fetchone()
+        return row["last_seen_at"] if row else None
+
+    def new_since(self, project: str, now: datetime) -> datetime:
+        """Cards first seen after this are new: the owner's last "Mark all seen", or a day."""
+        mark = _ts(self.seen_mark(project))
+        return mark if mark is not None else now - NEW_WINDOW
+
+    def summary(self, project: str, sub: str | None, now: datetime) -> tuple[int, int]:
+        """(asks in Needs you from the last 14 days, new cards) on the board or one game, counted
+        as the page's chips count them: top-level cards and the owner's own, none hidden."""
+        since = self.new_since(project, now)
+        rows = [(r["col"], bool(r["older"]), r["first_seen"], r["sub"])
+                for r in self.cards(project) if r["parent"] is None]  # fmt: skip
+        rows += [(m["col"], False, m["created_at"], m["sub"]) for m in self.manual(project)]
+        needs = new = 0
+        for col, older, first_seen, card_sub in rows:
+            if sub is not None and card_sub != sub:
+                continue
+            if col == NEEDS_YOU and not older:
+                needs += 1
+            first = _ts(first_seen)
+            if col != HIDDEN and first is not None and first > since:
+                new += 1
+        return needs, new
+
+    def mark_seen(self, project: str, now: str) -> None:
+        """The owner's "Mark all seen": cards first seen after this are new."""
+        with self.tx():
+            self.db.execute(
+                "INSERT INTO visit (project, last_seen_at, prev_seen_at) VALUES (?, ?, NULL)"
+                " ON CONFLICT(project) DO UPDATE SET prev_seen_at = last_seen_at,"
+                " last_seen_at = excluded.last_seen_at",
+                (project, now),
+            )
 
     def events(self, card_id: str) -> list[sqlite3.Row]:
         return list(self.db.execute(
