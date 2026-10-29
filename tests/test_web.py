@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
-from boardkit import card, now, result
+from boardkit import COUNTS, card, now, result
 from fastapi.testclient import TestClient
 
 from docboard import cli
 from docboard.config import Config, Project
-from docboard.store import Store
+from docboard.store import FloorError, Store
 from docboard.web import create_app, linkify
 
 PORT = 8742
@@ -27,6 +28,7 @@ def env(tmp_path: Path) -> tuple[TestClient, Path]:
             card("ny:1", "needs_you", kind="needs", title="<script>alert(1)</script> set the token",
                  body="see javascript:alert(1) and https://example.com/x."),
             card("ny:old", "needs_you", kind="needs", title="An old ask", older=True),
+            card("ny:b", "needs_you", kind="needs", title="A beta ask", sub="beta"),
             card("bl:1", "ideas", title="A pole swing",
                  source={"path": "docs/DECISIONS.md", "line": 5, "ref_sha": "abc123"}),
             card("bl:2", "ideas", title="Outside", source={"path": "../../secrets.txt", "line": 1}),
@@ -124,15 +126,93 @@ def test_every_page_carries_the_security_headers(env: tuple[TestClient, Path]) -
     assert r.headers["referrer-policy"] == "same-origin"
 
 
-def test_the_board_folds_old_items_and_triage_clears_them(env: tuple[TestClient, Path]) -> None:
-    client, db = env
+def test_the_board_folds_old_items(env: tuple[TestClient, Path]) -> None:
+    client, _ = env
     page = client.get("/p/demo").text
     assert "An old ask" not in page and "Older (1)" in page
     assert "An old ask" in client.get("/p/demo?older=1").text
+
+
+def batch_of(page: str) -> str:
+    m = re.search(r'name="batch" value="([0-9a-f]+)"', page)
+    assert m, "no Undo this batch form on the page"
+    return m.group(1)
+
+
+def test_resolve_older_asks_first_and_can_be_undone(env: tuple[TestClient, Path]) -> None:
+    client, db = env
     r = client.post("/p/demo/triage", data={"action": "resolve_older"}, headers=SAME)
-    assert r.status_code == 303
+    assert r.status_code == 303 and "confirm=older" in r.headers["location"]
+    with Store(db) as s:
+        assert s.card("ny:old")["col"] == "needs_you"  # asking changes nothing
+    page = client.get("/p/demo/triage?confirm=older").text
+    assert "An old ask" in page and 'value="ny:old"' in page and 'value="ny:1"' not in page
+    client.post("/p/demo/triage", data={"action": "resolve", "ids": ["ny:old"]}, headers=SAME)
     with Store(db) as s:
         assert (s.card("ny:old")["col"], s.card("ny:1")["col"]) == ("done", "needs_you")
+    page = client.get("/p/demo/triage").text
+    assert "Undo this batch" in page
+    client.post("/p/demo/triage/undo", data={"batch": batch_of(page)}, headers=SAME)
+    with Store(db) as s:
+        assert s.card("ny:old")["col"] == "needs_you"
+    assert "Undo this batch" not in client.get("/p/demo/triage").text
+
+
+def test_triage_filters_by_game(env: tuple[TestClient, Path]) -> None:
+    client, _ = env
+    page = client.get("/p/demo/triage?sub=beta").text
+    assert "A beta ask" in page and "An old ask" not in page
+    assert "A beta ask" not in client.get("/p/demo/triage?sub=alpha").text
+
+
+def test_select_all_checks_every_box_without_script(env: tuple[TestClient, Path]) -> None:
+    client, _ = env
+    boxes = re.findall(r'<input type="checkbox" name="ids"[^>]*>', client.get(
+        "/p/demo/triage?select=all").text)  # fmt: skip
+    assert len(boxes) == 3 and all("checked" in b for b in boxes)
+    plain = re.findall(r'<input type="checkbox" name="ids"[^>]*>', client.get(
+        "/p/demo/triage").text)  # fmt: skip
+    assert not any("checked" in b for b in plain)
+
+
+def test_undo_refuses_a_cross_site_post(env: tuple[TestClient, Path]) -> None:
+    client, db = env
+    client.post("/p/demo/triage", data={"action": "resolve", "ids": ["ny:1"]}, headers=SAME)
+    batch = batch_of(client.get("/p/demo/triage").text)
+    evil = {"Origin": "https://evil.example"}
+    assert (
+        client.post("/p/demo/triage/undo", data={"batch": batch}, headers=evil).status_code == 403
+    )
+    with Store(db) as s:
+        assert s.card("ny:1")["col"] == "done"
+
+
+def test_the_refused_banner_names_the_drop_and_the_command(env: tuple[TestClient, Path]) -> None:
+    client, db = env
+    with Store(db) as s, pytest.raises(FloorError):
+        s.apply(result([], {**COUNTS, "backlog": 3}), now())
+    page = client.get("/p/demo").text
+    assert "backlog: 10 → 3" in page
+    assert "uv run docboard sync --accept-drop --project demo" in page
+
+
+def test_a_failing_background_sync_shows_and_is_not_restarted(tmp_path: Path) -> None:
+    plain = tmp_path / "plain"  # not a git repo: every sync of it fails
+    plain.mkdir()
+    cfg = Config(projects=(Project(name="demo", path=plain),), claude_home=tmp_path / "claude")
+    db = tmp_path / "data" / "board.db"
+    with Store(db) as s:
+        s.apply(result([card("bl:1", "ideas")]), now(-1))  # a day old: the page refreshes it
+    app = create_app(cfg, db, PORT)
+    client = TestClient(app, base_url=BASE, follow_redirects=False)
+    client.get("/p/demo")
+    assert app.state.board.join(timeout=20)
+    page = client.get("/p/demo").text
+    assert "The last sync failed" in page and "GitError" in page
+    assert app.state.board.join(timeout=20)
+    with Store(db) as s:
+        statuses = [r[0] for r in s.db.execute("SELECT status FROM sync_run ORDER BY id")]
+    assert statuses == ["ok", "failed"]  # the failed run reset the two-minute wait
 
 
 def test_triage_resolves_and_dismisses_the_selected(env: tuple[TestClient, Path]) -> None:

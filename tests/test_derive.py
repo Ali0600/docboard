@@ -246,3 +246,36 @@ def test_html_entities_in_item_text_are_decoded(tmp_path: Path) -> None:
         )
     ]
     assert cards(tmp_path, recs)["ny:a1:1"].title == "Do — open Settings > General & tick it"
+
+
+def test_a_re_raise_moves_age_fold_and_evidence_to_the_latest(tmp_path: Path) -> None:
+    recs = [
+        f.assistant_text(
+            S, "a1", "2026-10-01T10:00:00Z", f.needs_block("Do — hand check the Alpha Game night")
+        ),
+        f.human(S, "h1", "2026-10-01T10:05:00Z", "later"),
+        f.assistant_text(
+            S, "a2", "2026-10-20T10:00:00Z", f.needs_block("Do — hand check Alpha Game's night")
+        ),
+        f.assistant_text(
+            "s2",
+            "a3",
+            "2026-10-26T12:00:00Z",
+            f.needs_block("Do — hand check the Alpha Game night"),
+        ),
+        f.human("s2", "h2", "2026-10-26T12:05:00Z", "checked it, fine"),
+    ]
+    c = cards(tmp_path, recs)["ny:a1:1"]
+    assert c.raised == 3 and c.event_at == "2026-10-01T10:00:00Z"
+    assert c.raised_at == "2026-10-26T12:00:00Z"
+    assert c.older is False  # first raised 26 days ago, last raised yesterday
+    assert c.suggested_evidence == "checked it, fine"
+
+
+def test_a_wrap_card_shows_your_next_message(tmp_path: Path) -> None:
+    ask = {"recap": "Built it.", "ask": "Which colour should the Beta logo use?"}
+    recs = [
+        f.tool_use(S, "w1", "2026-10-26T10:00:00Z", "mcp__ccd_turn__wrap_up", "t1", ask),
+        f.human(S, "h1", "2026-10-26T10:02:00Z", "blue"),
+    ]
+    assert cards(tmp_path, recs)["wu:t1"].suggested_evidence == "blue"
