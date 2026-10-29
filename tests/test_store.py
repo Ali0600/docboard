@@ -240,8 +240,11 @@ def test_a_card_another_board_derives_moves_with_the_owners_moves(store: Store) 
     store.apply(result([ask], project="two"), now())
     row = store.card("ny:1")
     assert (row["project"], row["col"], row["sub"], row["moved_from"]) == (
-        "two", "done", "beta", "one",
-    )  # fmt: skip
+        "two",
+        "done",
+        "beta",
+        "one",
+    )
     assert store.events("ny:1")[0]["detail"] == "moved here from one"
     store.apply(result([], project="one"), now())
     assert store.card("ny:1")["project"] == "two" and store.card("ny:1")["gone_at"] is None
@@ -478,8 +481,9 @@ def test_a_renamed_and_ticked_item_drops_the_stale_move(store: Store) -> None:
     assert col(store, "rm:b") == "done"
     assert store.db.execute("SELECT COUNT(*) FROM override").fetchone()[0] == 0
     assert "no longer applies" in store.events("rm:b")[0]["detail"]
-    store.apply(result([card("rm:b", "next", kind="roadmap", title="Ship the reward cards now")]),
-                now())  # fmt: skip
+    store.apply(
+        result([card("rm:b", "next", kind="roadmap", title="Ship the reward cards now")]), now()
+    )
     assert col(store, "rm:b") == "next"  # unticked: the old dismissal does not come back
 
 
@@ -517,3 +521,20 @@ def test_a_renamed_and_ticked_item_counts_as_following_its_source(store: Store) 
     store.dismiss("rm:a", now())
     ticked = card("rm:b", "done", kind="roadmap", title="Ship the reward cards now")
     assert store.apply(result([ticked]), now()).followed_source == 1
+
+
+def test_a_card_routed_away_moves_to_its_board_at_once(store: Store) -> None:
+    ask = card("ny:1", "needs_you", kind="needs")
+    store.apply(result([ask], project="one"), now())
+    store.resolve("ny:1", now())
+    leaving = result([], project="one")
+    leaving.handover = {"ny:1": "two"}
+    report = store.apply(leaving, now())
+    row = store.card("ny:1")
+    assert (row["project"], row["gone_at"], row["col"], report.handed_over) == (
+        "two",
+        None,
+        "done",
+        1,
+    )
+    assert store.events("ny:1")[0]["detail"] == "moved to two: its work is there"

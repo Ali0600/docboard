@@ -231,8 +231,9 @@ def test_a_crash_inside_apply_writes_only_a_failed_row(
         runner.run_sync(cfg, project, db, now=NOW)
     with Store(db) as s:
         assert [r[0] for r in s.db.execute("SELECT status FROM sync_run ORDER BY id")] == [
-            "ok", "failed",
-        ]  # fmt: skip
+            "ok",
+            "failed",
+        ]
         assert {c["id"]: c["title"] for c in s.cards("demo")} == before  # rolled back
 
 
@@ -395,10 +396,16 @@ def test_every_transcript_card_is_on_exactly_one_board(tmp_path: Path) -> None:
     git(two, "add", "-A")
     git(two, "commit", "-q", "-m", "tool")
     edits = [
-        f.tool_use("s1", f"e{i}", f"2026-10-26T09:1{i}:00Z", "Edit", f"t{i}",
-                   {"file_path": f"{two}/src/m{i}.py"})
+        f.tool_use(
+            "s1",
+            f"e{i}",
+            f"2026-10-26T09:1{i}:00Z",
+            "Edit",
+            f"t{i}",
+            {"file_path": f"{two}/src/m{i}.py"},
+        )
         for i in (1, 2, 3)
-    ]  # fmt: skip
+    ]
     recs = [
         f.human("s1", "h0", "2026-10-26T09:00:00Z", "fix the game"),
         f.assistant_text("s1", "a0", "2026-10-26T09:05:00Z", f.needs_block("Do — try the game")),
@@ -407,8 +414,10 @@ def test_every_transcript_card_is_on_exactly_one_board(tmp_path: Path) -> None:
         f.assistant_text("s1", "a1", "2026-10-26T09:20:00Z", f.needs_block("Do — restart it")),
         *f.plan_approval("s1", "2026-10-26T09:30:00Z", "p1", "# More"),
     ]
-    f.write(tmp_path / "claude" / "projects" / encode_path(one) / "s1.jsonl",
-            [dict(r, cwd=str(one)) for r in recs])  # fmt: skip
+    f.write(
+        tmp_path / "claude" / "projects" / encode_path(one) / "s1.jsonl",
+        [dict(r, cwd=str(one)) for r in recs],
+    )
     projects = (
         Project(name="demo", path=one, docs_ref="HEAD"),
         Project(name="tool", path=two, docs_ref="HEAD"),
@@ -419,7 +428,46 @@ def test_every_transcript_card_is_on_exactly_one_board(tmp_path: Path) -> None:
     ids_a = {c.id for c in a.cards if c.kind in kinds}
     ids_b = {c.id for c in b.cards if c.kind in kinds}
     assert ids_a == {"ny:a0:1", "pl:p1"} and ids_b == {"ny:a1:1"}
-    assert (a.counts["needs_items"], b.counts["needs_items"]) == (1, 1)
-    assert (a.counts["plan_calls"], b.counts["plan_calls"]) == (1, 0)
+    assert (a.counts["needs_items_here"], b.counts["needs_items_here"]) == (1, 1)
+    assert (a.counts["plan_calls_here"], b.counts["plan_calls_here"]) == (1, 0)
+    # The floors count what the parser finds in every board's transcripts, so a card moving
+    # between boards never looks like a collapse.
+    assert a.counts["needs_items"] == b.counts["needs_items"] == 2
+    assert a.counts["plan_calls"] == b.counts["plan_calls"] == 1
     assert (a.counts["transcript_files"], b.counts["transcript_files"]) == (1, 0)
     assert a.counts["transcript_files_read"] == b.counts["transcript_files_read"] == 1
+
+
+def test_one_projects_config_error_does_not_stop_the_others(tmp_path: Path) -> None:
+    bad = make_repo(tmp_path, {"games/alpha/game.toml": 'name = "Alpha Game"\n'})
+    good = tmp_path / "good"
+    good.mkdir()
+    git(good, "init", "-q", "-b", "main")
+    git(good, "remote", "add", "origin", "https://github.com/acme/good.git")
+    (good / "x.md").write_text("x\n")
+    git(good, "add", "-A")
+    git(good, "commit", "-q", "-m", "x")
+    broken = Project(
+        name="bad",
+        path=bad,
+        docs_ref="HEAD",
+        subprojects=Subprojects(glob="games/*", aliases={"ghost": ("Ghost",)}),
+    )
+    fine = Project(name="good", path=good, docs_ref="HEAD")
+    cfg = Config(projects=(broken, fine), claude_home=tmp_path / "claude")
+    routing = sync.router(cfg)
+    assert routing.project_of_repo("acme/good") == "good"  # learnt from its remote
+    assert sync.collect(cfg, fine, NOW).project == "good"
+
+
+def test_the_router_names_a_project_by_its_games(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path, {"games/alpha/game.toml": 'name = "Alpha Game"\n'})
+    p = Project(
+        name="demo",
+        path=repo,
+        docs_ref="HEAD",
+        subprojects=Subprojects(glob="games/*", name_from="game.toml:name"),
+    )
+    other = Project(name="other", path=tmp_path / "nowhere")
+    routing = sync.router(Config(projects=(p, other), claude_home=tmp_path / "claude"))
+    assert routing.by_name("Do — launch Alpha Game") == "demo"

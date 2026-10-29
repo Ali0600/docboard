@@ -193,6 +193,7 @@ class ApplyReport:
     adopted: int = 0  # cards moved here from another board
     reopened: int = 0  # raised again after the owner resolved or dismissed them
     kept_open: int = 0  # open asks whose transcript is gone
+    handed_over: int = 0  # cards another board now owns, moved there
 
     def warnings(self) -> list[str]:
         out = []
@@ -459,6 +460,7 @@ class Store:
             r for i, r in existing.items()
             if i not in seen and r["gone_at"] is None and r["kind"] not in frozen
         ]  # fmt: skip
+        vanished = [r for r in vanished if not self._hand_over(r, result, now, report)]
         vanished = [r for r in vanished if not self._keep_open(r, result, now, report)]
         self._renames(vanished, fresh, now, report)
         # An ask kept open after its transcript went, which the owner then put back in Needs you
@@ -520,6 +522,20 @@ class Store:
             report.reopened += 1
         elif row["raised"] > old["raised"]:
             self._event(now, "sync", card_id, "raised", f"raised again {when} ({row['raised']}×)")
+
+    def _hand_over(self, r: sqlite3.Row, result: SyncResult, now: str, report: ApplyReport) -> bool:
+        """A card routing now gives another board moves there at once, with the owner's moves,
+        rather than going gone here and waiting for that board's next sync."""
+        target = result.handover.get(r["id"])
+        if target is None or target == result.project:
+            return False
+        self.db.execute(
+            "UPDATE card SET project = ?, moved_from = ? WHERE id = ?",
+            (target, result.project, r["id"]),
+        )
+        self._event(now, "sync", r["id"], "moved", f"moved to {target}: its work is there")
+        report.handed_over += 1
+        return True
 
     def _keep_open(self, r: sqlite3.Row, result: SyncResult, now: str, report: ApplyReport) -> bool:
         """An ask still waiting on the owner whose session is no longer read (its transcript was

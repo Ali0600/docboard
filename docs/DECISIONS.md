@@ -53,9 +53,20 @@ its asks and plan sat on the games repo's Platform and its PRs had no plan.
   keys), a few were game asks that name no game.
   - **Keep the guess, with a badge:** *rejected* by the owner.
 - **Plans across continued sessions:** a session continued or forked from another holds copies
-  of its parent's records, with the same times. One plan card per first approval, whichever
-  sessions hold it; a PR joins the plan its own session holds. A copy's tie goes to the session
-  that started first (the original), not to the folder read first.
+  of its parent's records, with the same times. Runs of approvals that share any approval are
+  one plan, keyed by its first approval, whichever sessions hold it (a continuation may hold only
+  the tail of a run). A PR joins the plan its own session holds, and a link votes for that same
+  plan; each session's window ends at its own next plan, not its parent's. A copy's tie goes to
+  the session that started first, then to the one whose own file was created first (the
+  original), never to the folder read first.
+- **A card routing gives another board is handed over in the same sync** (the row moves, with
+  the owner's moves), rather than going gone until that board syncs.
+- **The collapse floors count what the parser finds in every board's transcripts:** *chosen*.
+  A board's own share of plans and asks moves when routing moves a card, so it is reported
+  (`plan_calls_here`, `needs_items_here`) but not floored.
+- A known one-time effect: the new routing and the started-first tie change which copy anchors a
+  few re-raised asks, so on the first sync three open asks take new ids; a move the owner had made
+  on the old id would not follow (the owner had made none).
 - **A PR titled as the first of a series (`PR 1`, `PR A`) after the plan already holds one ends
   that plan's claim:** *chosen*; it detached Run 14's PRs from Run 13's plan.
   - **Close a plan at `/wrap-up` or `/compact`:** *rejected*: measured, it detached plans' own

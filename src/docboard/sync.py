@@ -13,7 +13,7 @@ from pathlib import Path
 
 from docboard import docsrc, ghsrc
 from docboard.attribution import Attributor
-from docboard.config import Config, Project
+from docboard.config import Config, ConfigError, Project
 from docboard.derive import COLUMNS, Card, DocFile, Inputs, derive
 from docboard.gitrepo import GitError, Repo
 from docboard.route import Router
@@ -40,9 +40,13 @@ class SyncResult:
     # Every session whose transcript was read: an open ask whose session is missing was cleaned
     # up, not answered. Kept out of the JSON file, which is per card.
     sessions: set[str] = field(default_factory=set)
+    # Transcript cards another board owns -> that board: handed over, never left on no board.
+    handover: dict[str, str] = field(default_factory=dict)
 
     def to_json(self) -> dict:
-        data = {k: v for k, v in self.__dict__.items() if k not in ("cards", "sessions")}
+        data = {
+            k: v for k, v in self.__dict__.items() if k not in ("cards", "sessions", "handover")
+        }
         data["version"] = JSON_VERSION
         data["cards"] = [c.to_json() for c in self.cards]
         return data
@@ -82,8 +86,8 @@ def router(cfg: Config) -> Router:
             opened = Repo.open(p.path, p.docs_ref)
             repo = repo or opened.github_slug()
             subs[p.name] = _subprojects(opened, p, [])[0]
-        except (GitError, OSError):
-            pass  # not a git repo here: its own sync says so; routing goes on without it
+        except (GitError, OSError, ConfigError):
+            pass  # its own sync reports what is wrong; the other boards route without its games
         pairs.append((p.name, repo))
     return Router.build(pairs, subs)
 
@@ -156,6 +160,7 @@ def collect(cfg: Config, project: Project, now: datetime, gh: str | None = None)
     timings["transcripts"] = time.monotonic() - t2
 
     routed: dict[str, int] = {}
+    extras: dict = {}
     cards, more = derive(
         Inputs(
             project=project.name,
@@ -171,6 +176,7 @@ def collect(cfg: Config, project: Project, now: datetime, gh: str | None = None)
             router=routing,
         ),
         counts=routed,
+        extras=extras,
     )
     warnings += more
     states = Counter(p.state for p in prs)
@@ -194,10 +200,14 @@ def collect(cfg: Config, project: Project, now: datetime, gh: str | None = None)
         # What the one pass read for every project (informational):
         "transcript_files_read": scan.files,
         "transcript_bytes_read": scan.bytes,
-        # This board's share of the session items, after routing:
-        "plan_calls": routed.get("plan_calls", 0),
+        # Floors: what the parser finds in every board's transcripts. A collapse there means a
+        # parser broke; one board's share also moves when routing moves a card.
+        "plan_calls": len(scan.plans),
+        "needs_items": len(scan.needs),
+        # This board's share of the session items, after routing (not floored):
+        "plan_calls_here": routed.get("plan_calls", 0),
         "plan_cards": sum(1 for c in cards if c.kind == "plan"),
-        "needs_items": routed.get("needs_items", 0),
+        "needs_items_here": routed.get("needs_items", 0),
         "needs_cards": sum(1 for c in cards if c.kind == "needs"),
         "needs_headings_without_items": routed.get("needs_headings_without_items", 0),
         "questions": routed.get("questions", 0),
@@ -233,6 +243,7 @@ def collect(cfg: Config, project: Project, now: datetime, gh: str | None = None)
         degraded=degraded,
         sub_names=names,
         sessions=set(scan.session_mtime),
+        handover=extras.get("handover", {}),
     )
 
 

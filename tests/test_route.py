@@ -361,3 +361,164 @@ def test_a_game_named_in_an_ask_names_its_project(tmp_path: Path) -> None:
     assert router.by_name("Do — launch Alpha Game") == "demo"
     assert router.by_name("Do — launch Alpha Game and the gadget page") is None  # names two
     assert router.by_name("Do — plug in the Mac") is None
+
+
+# --- PR C, after review ----------------------------------------------------------------------
+
+
+def counted(scan: T.Scan, project: str) -> dict[str, int]:
+    out: dict[str, int] = {}
+    att = Attributor.build("games", ["alpha", "beta"], {"alpha": "Alpha Game"}, {}, {})
+    D.derive(
+        D.Inputs(
+            project=project,
+            github=None,
+            attributor=att,
+            backlog=[],
+            roadmap=[],
+            prs=[],
+            squash={},
+            scan=scan,
+            now=NOW,
+            router=ROUTER,
+        ),
+        counts=out,
+    )
+    return out
+
+
+def test_a_continuation_holding_the_tail_of_a_run_is_one_plan(tmp_path: Path) -> None:
+    run = [
+        r
+        for i in (1, 2, 3)
+        for r in f.plan_approval("s1", f"2026-10-20T1{i}:00:00Z", f"a{i}", "# Rewards", "r.md")
+    ]
+    tail = [dict(r, sessionId="s2") for r in run[2:]]  # a2 and a3 only
+    own = f.plan_approval("s2", "2026-10-21T10:00:00Z", "b1", "# Something else", "s.md")
+    scan = scan_of(tmp_path, {"s1": (f.ROOT, run), "s2": (f.ROOT, [*tail, *own])})
+    plans = {c.id: c for c in board(scan, "demo").values() if c.kind == "plan"}
+    assert sorted(plans) == ["pl:a1", "pl:b1"] and plans["pl:a1"].source["approvals"] == 3
+    shares = sum(counted(scan, p).get("plan_calls", 0) for p in ("demo", "gadget"))
+    assert shares == len(scan.plans) == 4
+
+
+def test_a_full_copy_belongs_to_the_session_whose_file_came_first(tmp_path: Path) -> None:
+    first = f.human("s1", "h0", "2026-10-25T09:00:00Z", "start")
+    ask = f.assistant_text("s1", "a1", "2026-10-26T10:00:00Z", f.needs_block("Do — check it"))
+    write(tmp_path, {"s1": (GADGET, [first, ask])})  # the original, created first
+    import time
+
+    time.sleep(0.05)
+    copy = [dict(first, sessionId="s2"), dict(ask, sessionId="s2")]  # its whole history
+    scan = scan_of(tmp_path, {"s1": (GADGET, [first, ask]), "s2": (f.ROOT, copy)})
+    assert scan.needs[("a1", 1)].session == "s1"
+    assert "ny:a1:1" in board(scan, "gadget")
+
+
+def test_a_forks_prs_vote_for_its_plan_after_the_parent_moved_on(tmp_path: Path) -> None:
+    p1 = f.plan_approval("s1", "2026-10-20T10:00:00Z", "p1", "# The tool work")
+    p2 = f.plan_approval("s1", "2026-10-21T10:00:00Z", "p2", "# Other work")
+    fork = [
+        *(dict(r, sessionId="s2") for r in p1),
+        f.pr_link("s2", 3, "2026-10-22T10:00:00Z", repo="acme/gadget"),
+        f.pr_link("s2", 4, "2026-10-22T11:00:00Z", repo="acme/gadget"),
+    ]
+    scan = scan_of(tmp_path, {"s1": (f.ROOT, [*p1, *p2]), "s2": (f.ROOT, fork)})
+    gadget = board(
+        scan,
+        "gadget",
+        [
+            pr(3, "2026-10-22T09:00:00Z", repo="acme/gadget"),
+            pr(4, "2026-10-22T10:30:00Z", repo="acme/gadget"),
+        ],
+    )
+    assert gadget["pr:acme/gadget#3"].parent == "pl:p1"
+    assert gadget["pl:p1"].source["routed"] == "linked-prs"
+
+
+def test_a_later_plans_prs_do_not_route_an_earlier_one(tmp_path: Path) -> None:
+    recs = [
+        *f.plan_approval("s1", "2026-10-20T10:00:00Z", "p1", "# First"),
+        *f.plan_approval("s1", "2026-10-21T10:00:00Z", "p2", "# Second"),
+        f.pr_link("s1", 3, "2026-10-22T10:00:00Z", repo="acme/gadget"),
+    ]
+    scan = scan_of(tmp_path, {"s1": (f.ROOT, recs)})
+    assert "pl:p1" in board(scan, "demo") and "pl:p2" in board(scan, "gadget")
+
+
+def test_a_plan_named_for_a_project_or_worked_there_goes_there(tmp_path: Path) -> None:
+    named = f.plan_approval("s1", "2026-10-20T10:00:00Z", "p1", "# The gadget page")
+    worked = [
+        *f.plan_approval("s2", "2026-10-21T10:00:00Z", "p2", "# Untitled work"),
+        *(
+            edit("s2", f"e{i}", f"2026-10-21T10:1{i}:00Z", GADGET, f"src/m{i}.py")
+            for i in (1, 2, 3)
+        ),
+    ]
+    scan = scan_of(tmp_path, {"s1": (f.ROOT, named), "s2": (f.ROOT, worked)})
+    gadget = board(scan, "gadget")
+    assert (gadget["pl:p1"].source["routed"], gadget["pl:p2"].source["routed"]) == (
+        "name",
+        "plan-window",
+    )
+
+
+def test_a_record_with_no_session_lands_on_one_board_only(tmp_path: Path) -> None:
+    rec = f.assistant_text("s1", "a1", "2026-10-26T10:00:00Z", f.needs_block("Do — x"))
+    rec.pop("sessionId")
+    scan = scan_of(tmp_path, {"s1": (GADGET, [rec])})
+    on = [p for p in ("demo", "gadget") if "ny:a1:1" in board(scan, p)]
+    assert len(on) == 1
+
+
+def test_turn_routing_needs_three_touches_and_most_of_them() -> None:
+    def t(project: str, i: int) -> T.Touch:
+        return T.Touch(f"t{project}{i}", "s1", "2026-10-26T10:00:00Z", "x", project)
+
+    assert ROUTER.by_touches([t("gadget", 1), t("gadget", 2)]) is None
+    assert ROUTER.by_touches([t("gadget", i) for i in (1, 2, 3)]) == "gadget"
+    assert (
+        ROUTER.by_touches([*(t("gadget", i) for i in (1, 2, 3)), t("demo", 1), t("demo", 2)])
+        == "gadget"
+    )
+    assert ROUTER.by_touches([t("gadget", 1), t("gadget", 2), t("demo", 1), t("demo", 2)]) is None
+
+
+def test_a_project_is_named_by_whole_words_in_any_case() -> None:
+    assert ROUTER.by_name("Do — restart the Gadget page") == "gadget"
+    assert ROUTER.by_name("cd ~/work/gadget && run it") == "gadget"
+    assert ROUTER.by_name("Do — gadgets everywhere") is None
+    assert ROUTER.by_name("Do — the my-gadget folder") is None
+
+
+def test_a_sibling_repos_files_are_not_the_projects() -> None:
+    roots = T.Roots({"gadget": [str(GADGET)]})
+    assert roots.owner(str(GADGET) + "-x/src/m.py") is None
+    assert roots.owner(str(GADGET) + "/src/m.py") == ("gadget", "src/m.py")
+
+
+def test_the_series_rule_also_knows_pr_0(tmp_path: Path) -> None:
+    recs = [
+        *f.plan_approval("s1", "2026-10-20T10:00:00Z", "p1", "# Run"),
+        *(f.pr_link("s1", n, f"2026-10-2{n}T12:00:00Z") for n in (1, 2)),
+    ]
+    prs = [pr(1, "2026-10-21T10:00:00Z", "first"), pr(2, "2026-10-22T10:00:00Z", "PR 0 — next run")]
+    got = board(scan_of(tmp_path, {"s1": (f.ROOT, recs)}), "demo", prs)
+    assert (got["pr:acme/demo#1"].parent, got["pr:acme/demo#2"].parent) == ("pl:p1", None)
+
+
+def test_a_quiet_session_finishes_a_plan_in_a_repo_without_github(tmp_path: Path) -> None:
+    recs = f.plan_approval("s1", "2026-10-20T10:00:00Z", "p1", "# Only plan")
+    scan = scan_of(tmp_path, {"s1": (f.ROOT, recs)})
+    assert board(scan, "demo", github=None)["pl:p1"].column == D.IN_PROGRESS  # still active
+    scan.session_mtime = dict.fromkeys(scan.session_mtime, NOW.timestamp() - 3 * 86400)
+    assert board(scan, "demo", github=None)["pl:p1"].column == D.DONE
+
+
+def test_a_deleted_transcript_is_forgotten_by_the_memo(tmp_path: Path) -> None:
+    projects = write(tmp_path, {"s1": (f.ROOT, [f.human("s1", "h1", "2026-10-20T10:00:00Z", "a")])})
+    memo = T.FileMemo()
+    T.scan_all(PROJECTS, projects, memo)
+    (projects / T.encode_path(f.ROOT) / "s1.jsonl").unlink()
+    T.scan_all(PROJECTS, projects, memo)
+    assert memo._items == {}

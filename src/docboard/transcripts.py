@@ -23,7 +23,7 @@ import re
 import threading
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 MAX_LINE = 16 * 1024 * 1024
@@ -178,6 +178,7 @@ class FileResult:
     parse_errors: int
     skipped_long: int
     starts: tuple[tuple[str, str], ...] = ()  # (session, its earliest record's timestamp here)
+    born: float = 0.0  # when the file was created (its creation time where the OS keeps one)
 
 
 @dataclass
@@ -203,6 +204,7 @@ class Scan:
     holders: dict[tuple[str, object], set[str]] = field(default_factory=lambda: defaultdict(set))
     session_project: dict[str, str] = field(default_factory=dict)  # the project it is filed under
     session_start: dict[str, str] = field(default_factory=dict)  # its earliest record's time
+    session_born: dict[str, float] = field(default_factory=dict)  # when its own file was created
     files_by: Counter = field(default_factory=Counter)
     bytes_by: Counter = field(default_factory=Counter)
     foreign_by: Counter = field(default_factory=Counter)
@@ -216,16 +218,17 @@ class Scan:
         return {session, *self.holders.get((kind, key), ())}
 
 
-def _keep(store: dict, key: object, item: object, starts: dict[str, str] | None = None) -> None:
-    """Keeps the earliest copy of a record. A copy in a continued session has the same time as
-    the original, so on a tie the session that started first (the original) keeps it."""
+def _keep(store: dict, key: object, item: object, order: dict[str, tuple] | None = None) -> None:
+    """Keeps the earliest copy of a record. A copy in a continued or forked session has the same
+    time as the original, so on a tie the original keeps it: the session that started first,
+    then the one whose own file was created first (a full copy starts at the same record)."""
     old = store.get(key)
     if old is None or item.ts < old.ts:  # type: ignore[attr-defined]
         store[key] = item
-    elif starts is not None and item.ts == old.ts:  # type: ignore[attr-defined]
-        new_start = starts.get(item.session, "")  # type: ignore[attr-defined]
-        old_start = starts.get(old.session, "")  # type: ignore[attr-defined]
-        if new_start and (not old_start or new_start < old_start):
+    elif order is not None and item.ts == old.ts:  # type: ignore[attr-defined]
+        new_rank = order.get(item.session)  # type: ignore[attr-defined]
+        old_rank = order.get(old.session)  # type: ignore[attr-defined]
+        if new_rank is not None and (old_rank is None or new_rank < old_rank):
             store[key] = item
 
 
@@ -578,7 +581,9 @@ def read_file(path: Path, roots: Roots, want_cwds: bool) -> tuple[FileResult, tu
             fs.line(raw)
         after = os.fstat(fh.fileno())
     ident = _ident(before)
-    return fs.freeze(path.stem, before.st_size), (ident if ident == _ident(after) else None)
+    result = fs.freeze(path.stem, before.st_size)
+    result = replace(result, born=getattr(before, "st_birthtime", before.st_ctime))
+    return result, (ident if ident == _ident(after) else None)
 
 
 def _ident(st: os.stat_result) -> tuple:
@@ -620,8 +625,8 @@ class FileMemo:
 MEMO = FileMemo()
 
 
-def _merge(scan: Scan, fr: FileResult) -> None:
-    starts = scan.session_start
+def _merge(scan: Scan, fr: FileResult, order: dict[str, tuple]) -> None:
+    starts = order
     for item in fr.needs:
         _keep(scan.needs, (item.uuid, item.n), item, starts)
         scan.holders[("needs", (item.uuid, item.n))].add(item.session)
@@ -691,9 +696,16 @@ def scan_all(
         for sid, ts in fr.starts:
             if sid not in scan.session_start or ts < scan.session_start[sid]:
                 scan.session_start[sid] = ts
+        if fr.born and fr.stem in fr.sessions:  # the session's own file, not a copy's
+            scan.session_born[fr.stem] = fr.born
         read.append(fr)
-    for fr in read:  # once every session's start is known, for the tie between copies
-        _merge(scan, fr)
+    # Once every session's start and file are known, the tie between copies can be decided.
+    order = {
+        sid: (start, scan.session_born.get(sid, float("inf")))
+        for sid, start in scan.session_start.items()
+    }
+    for fr in read:
+        _merge(scan, fr, order)
     return scan
 
 
