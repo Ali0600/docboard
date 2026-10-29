@@ -65,9 +65,9 @@ def _sync(args: argparse.Namespace) -> int:
             f"  transcripts    {c['transcript_files']} files, {_gb(c['transcript_bytes'])} in"
             f" {t['transcripts']:.1f} s ({c['transcript_foreign']} from other folders skipped)"
         )
-        print(f"    plans        {c['plan_cards']} cards from {c['plan_calls']} plan calls")
+        print(f"    plans        {c['plan_cards']} cards from {c['plan_calls_here']} plan calls")
         print(
-            f"    needs you    {c['needs_cards']} cards from {c['needs_items']} items"
+            f"    needs you    {c['needs_cards']} cards from {c['needs_items_here']} items"
             " (re-raises merged)"
         )
         print(

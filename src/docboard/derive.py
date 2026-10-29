@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import re
 from bisect import bisect_right
-from collections import defaultdict
-from collections.abc import Sequence
+from collections import Counter, defaultdict
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import cache
@@ -17,6 +17,7 @@ from docboard import ids
 from docboard.attribution import Attributor
 from docboard.docsrc import Bullet, RoadmapItem
 from docboard.ghsrc import PullRequest
+from docboard.route import Router
 from docboard.textsim import jaccard, similar
 from docboard.transcripts import PlanCall, Scan, Touch
 
@@ -36,6 +37,11 @@ _PR_SECTION = re.compile(r"^#{2,3}\s+PR\s*[0-9A-Z]{0,3}\b", re.M)
 MERGED_LONG_AGO = timedelta(days=7)
 PLAN_QUIET = timedelta(days=14)
 _FIRST_PAREN = re.compile(r"^\s*\(([^)]*)\)")
+# A PR titled as the first of a series ("PR 1 — …", "PR A: …") starts new work: once a plan
+# holds a PR, such a PR and every later one belong to some later plan, not this one.
+_SERIES = re.compile(r"\bPR ?(?:0|1|A)\b")
+_NEVER = datetime.max.replace(tzinfo=UTC)
+TRANSCRIPT_KINDS = ("needs", "question", "wrap", "plan")
 
 
 @dataclass
@@ -80,6 +86,9 @@ class Inputs:
     scan: Scan
     now: datetime
     ref_sha: str | None = None
+    # Every configured project, when the scan covers them all: each transcript card then goes to
+    # one board only. None: a single project's scan, every card is this project's.
+    router: Router | None = None
 
 
 @cache
@@ -116,32 +125,77 @@ class _Deriver:
     def __init__(self, inp: Inputs) -> None:
         self.inp = inp
         self.att = inp.attributor
+        self.router = inp.router
         self.cards: list[Card] = []
         self.warnings: list[str] = []
+        self.owner: dict[str, tuple[str, str]] = {}  # transcript card id -> (project, why)
+        self.tally: Counter = Counter()  # (project, count key) -> n, for the per-board counts
         scan = inp.scan
-        self.touches: dict[str, list[Touch]] = defaultdict(list)
+        self.all_touches: dict[str, list[Touch]] = defaultdict(list)
         for t in scan.touches.values():
-            self.touches[t.session].append(t)
-        for lst in self.touches.values():
+            self.all_touches[t.session].append(t)
+        for lst in self.all_touches.values():
             lst.sort(key=lambda t: _t(t.ts))
+        mine = (lambda t: t.project == inp.project) if self.router else (lambda t: True)
+        self.touches = {s: [t for t in ts if mine(t)] for s, ts in self.all_touches.items()}
         self.humans: dict[str, list] = defaultdict(list)
         for h in scan.humans.values():
             self.humans[h.session].append(h)
         for lst in self.humans.values():
             lst.sort(key=lambda h: _t(h.ts))
-        self.groups: dict[str, list[_PlanGroup]] = {}
+        self.groups: dict[str, list[_PlanGroup]] = {}  # each session's own runs of approvals
+        self.merged: dict[str, _PlanGroup] = {}  # first call id -> one plan, across sessions
+        self.holding: dict[str, set[str]] = {}  # first call id -> the sessions holding it
+        self.call_key: dict[
+            str, str
+        ] = {}  # each approved call -> the plan (its first call) it is in
+
+    # --- which board -----------------------------------------------------------------------
+
+    def _folder(self, session: str) -> str:
+        """The project the session's transcript is filed under; for a record with no session
+        (never filed), the same fixed board in every sync, never the board being synced."""
+        found = self.inp.scan.session_project.get(session)
+        if found is not None:
+            return found
+        return sorted(self.router.names)[0] if self.router else self.inp.project
+
+    def _ask_owner(self, session: str, at: datetime, *texts: str) -> tuple[str, str]:
+        """An ask's board: the one project its text names, else the project its turn's files are
+        in, else the project its transcript is filed under."""
+        if self.router is None:
+            return self.inp.project, "folder"
+        for text in texts:
+            name = self.router.by_name(text)
+            if name:
+                return name, "name"
+        start = self._prev_human(session, at)
+        turn = self.router.by_touches(
+            t for t in self.all_touches.get(session, ()) if start <= _t(t.ts) <= at
+        )
+        if turn:
+            return turn, "turn"
+        return self._folder(session), "folder"
+
+    def _own(self, card: Card, owner: tuple[str, str], session: str) -> None:
+        self.owner[card.id] = owner
+        folder = self._folder(session)
+        if self.router is not None and owner[0] != folder:
+            card.source["routed"] = owner[1]
+            card.source["filed_under"] = folder
+
+    def mine(self, card_id: str) -> bool:
+        return self.owner.get(card_id, (self.inp.project,))[0] == self.inp.project
 
     # --- attribution helpers -------------------------------------------------------------
 
-    def _window(self, session: str, start: datetime, end: datetime) -> str | None:
-        paths = [t.rel for t in self.touches.get(session, ()) if start <= _t(t.ts) <= end]
-        return self.att.by_files(paths)
-
-    def _session_branch(self, session: str) -> str | None:
-        counts = self.inp.scan.branches.get(session)
-        if not counts:
-            return None
-        return self.att.by_branch(counts.most_common(1)[0][0])
+    def _window(self, sessions: Iterable[str], start: datetime, end: datetime) -> str | None:
+        seen: dict[str, str] = {}
+        for s in sessions:
+            for t in self.touches.get(s, ()):
+                if start <= _t(t.ts) <= end:
+                    seen[t.id] = t.rel  # a copy in a continued session counts once
+        return self.att.by_files(seen.values())
 
     def _next_human(self, session: str, at: datetime) -> object | None:
         return next((h for h in self.humans.get(session, ()) if _t(h.ts) > at), None)
@@ -173,21 +227,20 @@ class _Deriver:
         return best
 
     def _transcript_sub(self, session: str, at: datetime, *texts: str) -> tuple[str, str]:
+        """The game an ask is about: named, else the files of its turn, else of the work since
+        the plan before it; else the project's root (never a guess from the session's branch)."""
         for reason, text in zip(("title", "body"), texts, strict=False):
             slug = self.att.by_text(text)
             if slug:
                 return slug, reason
-        slug = self._window(session, self._prev_human(session, at), at)
+        slug = self._window([session], self._prev_human(session, at), at)
         if slug:
             return slug, "turn"
         since = self._last_approval(session, at)
         if since is not None:
-            slug = self._window(session, since, at)
+            slug = self._window([session], since, at)
             if slug:
                 return slug, "since-plan"
-        slug = self._session_branch(session)
-        if slug:
-            return slug, "session-branch"
         return "", "root"
 
     # --- docs ----------------------------------------------------------------------------
@@ -259,16 +312,25 @@ class _Deriver:
     # --- plans and pull requests ---------------------------------------------------------
 
     def plan_groups(self) -> None:
+        """Runs of approvals with one title and plan file, per session, then one plan per first
+        approval across the sessions holding it: a continued or forked session holds its
+        parent's plans, and a PR it opens joins them."""
         scan = self.inp.scan
-        by_session: dict[str, list[PlanCall]] = defaultdict(list)
+        approved: list[PlanCall] = []
         for call in scan.plans.values():
             res = scan.results.get(call.id)
             if res is None:
                 self.pending_plan(call)
             elif res.outcome == "approved" and not res.is_agent:
-                by_session[call.session].append(call)
+                approved.append(call)
+            else:
+                self.tally[(self._folder(call.session), "plan_calls")] += 1
+        by_session: dict[str, list[PlanCall]] = defaultdict(list)
+        for call in approved:
+            for s in scan.holding("plan", call.id, call.session):
+                by_session[s].append(call)
         for session, calls in by_session.items():
-            calls.sort(key=lambda c: _t(c.ts))
+            calls.sort(key=lambda c: (_t(c.ts), c.id))
             groups: list[_PlanGroup] = []
             for c in calls:
                 title = plan_title(c.plan)
@@ -278,50 +340,167 @@ class _Deriver:
                 else:
                     groups.append(_PlanGroup([c], title))
             self.groups[session] = groups
+        # One plan per set of runs that share any approval, across every session holding one:
+        # a continuation may hold only the tail of its parent's run.
+        root: dict[str, str] = {}
+
+        def find(x: str) -> str:
+            while root.setdefault(x, x) != x:
+                root[x] = root[root[x]]
+                x = root[x]
+            return x
+
+        for groups in self.groups.values():
+            for g in groups:
+                for c in g.calls[1:]:
+                    root[find(c.id)] = find(g.first.id)
+        members: dict[str, dict[str, PlanCall]] = defaultdict(dict)
+        sessions_of: dict[str, set[str]] = defaultdict(set)
+        title_of: dict[str, str] = {}
+        for session, groups in self.groups.items():
+            for g in groups:
+                r = find(g.first.id)
+                for c in g.calls:
+                    members[r][c.id] = c
+                    title_of.setdefault(c.id, g.title)
+                sessions_of[r].add(session)
+        for r, calls in members.items():
+            ordered = sorted(calls.values(), key=lambda c: (_t(c.ts), c.id))
+            key = ordered[0].id
+            self.merged[key] = _PlanGroup(ordered, title_of[key])
+            self.holding[key] = sessions_of[r]
+            for c in ordered:
+                self.call_key[c.id] = key
+
+    def _group_key(self, session: str, at: datetime) -> str | None:
+        """The plan the session approved last at or before a time."""
+        best: tuple[datetime, str] | None = None
+        for g in self.groups.get(session, ()):
+            for c in g.calls:
+                ct = _t(c.ts)
+                if ct <= at and (best is None or ct > best[0]):
+                    best = (ct, self.call_key[c.id])
+        return best[1] if best else None
+
+    def _spans(self, key: str) -> list[tuple[str, datetime, datetime]]:
+        """Each holding session's window for a plan: from its first approval of it there to the
+        next plan that session approved (a fork's window is its own, not its parent's)."""
+        spans = []
+        for s in self.holding[key]:
+            mine = [_t(c.ts) for g in self.groups.get(s, ()) for c in g.calls
+                    if self.call_key[c.id] == key]  # fmt: skip
+            if not mine:
+                continue
+            start = min(mine)
+            later = [_t(g.first.ts) for g in self.groups.get(s, ())
+                     if self.call_key[g.first.id] != key and _t(g.first.ts) > start]  # fmt: skip
+            spans.append((s, start, min(later, default=_NEVER)))
+        return spans
+
+    def _group_end(self, key: str) -> datetime:
+        """When the plan's window closes in every session holding it."""
+        return max((end for _, _, end in self._spans(key)), default=_NEVER)
+
+    def _plan_owner(self, key: str) -> tuple[str, str]:
+        """A plan's board: the repo most of its PRs went to, else the project its title names,
+        else the one its window's files are in, else where its transcript is filed."""
+        g = self.merged[key]
+        folder = self._folder(g.first.session)
+        if self.router is None:
+            return self.inp.project, "folder"
+        spans = self._spans(key)
+        sessions = self.holding[key]
+        # A link votes for the plan its own session joins it to (the PR join's own rule).
+        linked = {
+            (link.repo.casefold(), link.number): link
+            for link in self.inp.scan.pr_links.values()
+            if link.session in sessions and self._group_key(link.session, _t(link.ts)) == key
+        }
+        votes = Counter(
+            p for (repo, _), _ in linked.items() if (p := self.router.project_of_repo(repo))
+        )
+        tied: set[str] | None = None
+        if votes:
+            top = max(votes.values())
+            tied = {p for p, n in votes.items() if n == top}
+            if len(tied) == 1:
+                return tied.pop(), "linked-prs"
+
+        def ok(p: str | None) -> bool:
+            return bool(p) and (tied is None or p in tied)
+
+        name = self.router.by_name(g.title)
+        if ok(name):
+            return name, "name"
+        window = self.router.by_touches(
+            {t.id: t for s, start, end in spans for t in self.all_touches.get(s, ())
+             if start <= _t(t.ts) < end}.values()
+        )  # fmt: skip
+        if ok(window):
+            return window, "plan-window"
+        if tied and folder not in tied:
+            return sorted(tied)[0], "linked-prs"
+        return folder, "folder"
 
     def pending_plan(self, call: PlanCall) -> None:
-        sub, reason = self._transcript_sub(call.session, _t(call.ts), plan_title(call.plan))
-        self.cards.append(
-            Card(
-                id=ids.plan_id(call.id),
-                kind="plan",
-                column=NEEDS_YOU,
-                title=plan_title(call.plan),
-                sub=sub,
-                sub_reason=reason,
-                body=call.plan[:BODY_CAP],
-                event_at=call.ts,
-                older=_t(call.ts) < self.inp.now - RECENT,
-                badges=["waiting for approval"],
-                source={"session": call.session},
-            )
+        at = _t(call.ts)
+        title = plan_title(call.plan)
+        sub, reason = self._transcript_sub(call.session, at, title)
+        card = Card(
+            id=ids.plan_id(call.id),
+            kind="plan",
+            column=NEEDS_YOU,
+            title=title,
+            sub=sub,
+            sub_reason=reason,
+            body=call.plan[:BODY_CAP],
+            event_at=call.ts,
+            raised_at=call.ts,
+            older=at < self.inp.now - RECENT,
+            badges=["waiting for approval"],
+            source={"session": call.session},
         )
+        owner = self._ask_owner(call.session, at, title)
+        self._own(card, owner, call.session)
+        self.tally[(owner[0], "plan_calls")] += 1
+        self.cards.append(card)
 
-    def _pr_owner(self) -> dict[int, tuple[str, _PlanGroup | None]]:
-        """PR number → (author session, the plan it implements or None)."""
+    def _pr_owner(self) -> dict[int, tuple[str, str | None]]:
+        """PR number → (the session that opened it, the plan it implements or None)."""
+        github = (self.inp.github or "").casefold()
         links: dict[int, list[tuple[str, datetime]]] = defaultdict(list)
         for link in self.inp.scan.pr_links.values():
-            if self.inp.github and link.repo == self.inp.github:
+            if github and link.repo.casefold() == github:
                 links[link.number].append((link.session, _t(link.ts)))
-        owner: dict[int, tuple[str, _PlanGroup | None]] = {}
+        owner: dict[int, tuple[str, str | None]] = {}
         for pr in self.inp.prs:
             cands = links.get(pr.number)
             if not cands:
                 continue
             created = _t(pr.created_at)
-            session = min(cands, key=lambda c: abs((c[1] - created).total_seconds()))[0]
-            best: tuple[datetime, _PlanGroup] | None = None
-            for g in self.groups.get(session, ()):
-                for c in g.calls:
-                    ct = _t(c.ts)
-                    if ct <= created and (best is None or ct > best[0]):
-                        best = (ct, g)
-            owner[pr.number] = (session, best[1] if best else None)
+            session = min(cands, key=lambda c: (abs((c[1] - created).total_seconds()), c[0]))[0]
+            owner[pr.number] = (session, self._group_key(session, created))
+        # A PR starting a new series ends the plan's claim on it and on every later one.
+        by_key: dict[str, list[PullRequest]] = defaultdict(list)
+        for pr in self.inp.prs:
+            key = owner.get(pr.number, (None, None))[1]
+            if key:
+                by_key[key].append(pr)
+        for prs in by_key.values():
+            prs.sort(key=lambda p: (_t(p.created_at), p.number))
+            for i, pr in enumerate(prs):
+                if i and _SERIES.search(pr.title):
+                    for later in prs[i:]:
+                        owner[later.number] = (owner[later.number][0], None)
+                    break
         return owner
 
     def prs_and_plans(self) -> None:
+        plan_owner = {key: self._plan_owner(key) for key in self.merged}
+        for key, (proj, _) in plan_owner.items():
+            self.tally[(proj, "plan_calls")] += len(self.merged[key].calls)
         owner = self._pr_owner()
-        by_group: dict[int, list[PullRequest]] = defaultdict(list)
+        by_group: dict[str, list[PullRequest]] = defaultdict(list)
         for pr in self.inp.prs:
             cid = ids.pr_id(pr.repo, pr.number)
             column = IN_PROGRESS if pr.state == "open" else DONE
@@ -353,37 +532,66 @@ class _Deriver:
                     "state": pr.state,
                 },
             )
-            session, group = owner.get(pr.number, (None, None))
+            session, key = owner.get(pr.number, (None, None))
             if session:
                 card.source["session"] = session
-            if group is not None:
-                by_group[id(group)].append(pr)
-                card.parent = ids.plan_id(group.first.id)
+            if key is not None:
+                by_group[key].append(pr)
+                plan_proj = plan_owner[key][0]
+                if plan_proj == self.inp.project:
+                    card.parent = ids.plan_id(key)
+                else:
+                    # Its plan is on another board: the card stays on this one, naming it.
+                    card.source.update(plan=ids.plan_id(key), plan_title=self.merged[key].title,
+                                       plan_project=plan_proj)  # fmt: skip
+                    card.badges.append(f"plan in {plan_proj}")
             self.cards.append(card)
+        other = self._other_repo_prs()
         cards_by_id = {c.id: c for c in self.cards}
-        for session, groups in self.groups.items():
-            for i, g in enumerate(groups):
-                self._plan_card(session, groups, i, g, by_group.get(id(g), []), cards_by_id)
+        for key in self.merged:
+            self._plan_card(key, plan_owner[key], by_group.get(key, []), other.get(key, []),
+                            cards_by_id)  # fmt: skip
+
+    def _other_repo_prs(self) -> dict[str, list[tuple[str, int]]]:
+        """Each plan's PRs in another configured repo: (repo, number), from its sessions' links."""
+        github = (self.inp.github or "").casefold()
+        found: dict[str, dict[tuple[str, int], None]] = defaultdict(dict)
+        for link in self.inp.scan.pr_links.values():
+            if link.repo.casefold() == github:
+                continue
+            if self.router is not None and not self.router.project_of_repo(link.repo):
+                continue
+            key = self._group_key(link.session, _t(link.ts))
+            if key:
+                found[key][(link.repo, link.number)] = None
+        return {k: sorted(v) for k, v in found.items()}
 
     def _plan_card(
         self,
-        session: str,
-        groups: list[_PlanGroup],
-        i: int,
-        g: _PlanGroup,
+        key: str,
+        owner: tuple[str, str],
         prs: list[PullRequest],
+        other: list[tuple[str, int]],
         cards_by_id: dict[str, Card],
     ) -> None:
         now = self.inp.now
+        g = self.merged[key]
         last = _t(g.last.ts)
-        later_plan = i + 1 < len(groups)
-        mtime = self.inp.scan.session_mtime.get(session, 0.0)
-        idle = datetime.fromtimestamp(mtime, UTC) < now - SESSION_IDLE if mtime else True
+        sessions = self.holding[key]
+        holding_last = {s for s in sessions for gg in self.groups.get(s, ()) if g.last in gg.calls}
+        later_plan = any(
+            _t(gg.first.ts) > last for s in holding_last for gg in self.groups.get(s, ())
+        )
+        mtimes = [self.inp.scan.session_mtime.get(s, 0.0) for s in sessions]
+        idle = all(not m or datetime.fromtimestamp(m, UTC) < now - SESSION_IDLE for m in mtimes)
         planned = len(_PR_SECTION.findall(g.last.plan))
         merged = sum(1 for p in prs if p.state == "merged")
         newest = max((_t(p.merged_at or p.closed_at or "") for p in prs), default=None)
         quiet = False
-        if not prs:
+        if not prs and self.inp.github is None:
+            # A repo with no GitHub remote has no PRs to wait for: the work is the session's.
+            column = DONE if (later_plan or idle) else IN_PROGRESS
+        elif not prs:
             column = NEXT
         elif any(p.state == "open" for p in prs):
             column = IN_PROGRESS
@@ -399,9 +607,18 @@ class _Deriver:
             column, quiet = DONE, True
         else:
             column = IN_PROGRESS
-        badges = [f"{merged} of {max(len(prs), planned)} PRs merged"] if prs else ["no PR yet"]
+        if prs:
+            badges = [f"{merged} of {max(len(prs), planned)} PRs merged"]
+        elif self.inp.github is None:
+            badges = []
+        else:
+            badges = ["no PR yet"]
         if quiet and newest is not None:
             badges.append(f"quiet since {newest.date().isoformat()}")
+        elsewhere = Counter(
+            (self.router.project_of_repo(r) if self.router else None) or r for r, _ in other
+        )
+        badges.extend(f"+{n} in {p}" for p, n in sorted(elsewhere.items()))
         child_ids = [ids.pr_id(p.repo, p.number) for p in prs]
         subs = {cards_by_id[c].sub for c in child_ids if c in cards_by_id}
         sub = self.att.by_text(g.title)
@@ -409,33 +626,37 @@ class _Deriver:
         if not sub and len(subs) == 1 and "" not in subs:
             sub, reason = subs.pop(), "linked-prs"
         if not sub:
-            end = _t(groups[i + 1].first.ts) if later_plan else now
-            sub, reason = self._window(session, _t(g.first.ts), end), "plan-window"
-        if not sub:
-            sub, reason = self._session_branch(session), "session-branch"
+            paths = {
+                t.id: t.rel
+                for s, start, end in self._spans(key)
+                for t in self.touches.get(s, ())
+                if start <= _t(t.ts) <= min(end, now)
+            }
+            sub, reason = self.att.by_files(paths.values()), "plan-window"
         if not sub:
             sub, reason = "", "root"
-        self.cards.append(
-            Card(
-                id=ids.plan_id(g.first.id),
-                kind="plan",
-                column=column,
-                title=g.title,
-                sub=sub,
-                sub_reason=reason,
-                body=g.last.plan[:BODY_CAP],
-                event_at=g.last.ts,
-                badges=badges,
-                children=child_ids,
-                older=(column == NEXT and last < now - PLAN_OLDER),
-                source={
-                    "session": session,
-                    "plan_file": g.last.file_path,
-                    "approvals": len(g.calls),
-                    "session_title": self.inp.scan.titles.get(session, ""),
-                },
-            )
+        card = Card(
+            id=ids.plan_id(key),
+            kind="plan",
+            column=column,
+            title=g.title,
+            sub=sub,
+            sub_reason=reason,
+            body=g.last.plan[:BODY_CAP],
+            event_at=g.last.ts,
+            badges=badges,
+            children=child_ids,
+            older=(column == NEXT and last < now - PLAN_OLDER),
+            source={
+                "session": g.first.session,
+                "plan_file": g.last.file_path,
+                "approvals": len(g.calls),
+                "session_title": self.inp.scan.titles.get(g.first.session, ""),
+                "other_prs": [f"{r}#{n}" for r, n in other],
+            },
         )
+        self._own(card, owner, g.first.session)
+        self.cards.append(card)
 
     # --- owner-facing transcript items ---------------------------------------------------
 
@@ -449,10 +670,12 @@ class _Deriver:
             items.sort(key=lambda it: (_t(it.ts), it.n))
             kept: list[tuple[Card, str]] = []
             for it in items:
-                # Raised again later in the same session (turn-audit's similar(), 0.4).
+                # Raised again later in the same session (turn-audit's similar(), 0.4): the
+                # first raise's card, on the first raise's board.
                 twin = next((c for c, title in kept if similar(it.title, [title])), None)
                 if twin is not None:
                     self._raise(twin, 1, session, it.ts)
+                    self.tally[(self.owner[twin.id][0], "needs_items")] += 1
                     continue
                 at = _t(it.ts)
                 sub, reason = self._transcript_sub(session, at, it.title, it.body)
@@ -476,17 +699,21 @@ class _Deriver:
                         "session_title": scan.titles.get(session, ""),
                     },
                 )
+                self._own(card, self._ask_owner(session, at, it.title, it.body), session)
+                self.tally[(self.owner[card.id][0], "needs_items")] += 1
                 kept.append((card, it.title))
             per_session.extend(kept)
-        # Raised again from another session (a fork, a resumed task): one card when the
-        # sub-project matches and the wording is near-identical. The earliest card is kept.
+        # Raised again from another session (a fork, a resumed task): one card when the board
+        # and sub-project match and the wording is near-identical. The earliest card is kept.
         kept_all: list[tuple[Card, str]] = []
         for card, title in sorted(per_session, key=lambda ct: (_t(ct[0].event_at), ct[0].id)):
             twin = next(
                 (
                     c
                     for c, t in kept_all
-                    if c.sub == card.sub and jaccard(title, t) >= CROSS_SESSION_SAME
+                    if c.sub == card.sub
+                    and self.owner[c.id][0] == self.owner[card.id][0]
+                    and jaccard(title, t) >= CROSS_SESSION_SAME
                 ),
                 None,
             )
@@ -502,38 +729,45 @@ class _Deriver:
         for q in scan.questions.values():
             res = scan.results.get(q.id)
             at = _t(q.ts)
+            owner = self._ask_owner(q.session, at, " ".join(q.questions))
+            self.tally[(owner[0], "questions")] += 1
             if res is None:
                 sub, reason = self._transcript_sub(q.session, at, " ".join(q.questions))
-                self.cards.append(
-                    Card(
-                        id=ids.ask_id(q.id),
-                        kind="question",
-                        column=NEEDS_YOU,
-                        title=(q.questions[0] if q.questions else "A question")[:200],
-                        sub=sub,
-                        sub_reason=reason,
-                        body="\n".join(q.questions),
-                        event_at=q.ts,
-                        older=at < self.inp.now - RECENT,
-                        badges=["waiting for an answer"],
-                        source={"session": q.session},
-                    )
+                card = Card(
+                    id=ids.ask_id(q.id),
+                    kind="question",
+                    column=NEEDS_YOU,
+                    title=(q.questions[0] if q.questions else "A question")[:200],
+                    sub=sub,
+                    sub_reason=reason,
+                    body="\n".join(q.questions),
+                    event_at=q.ts,
+                    raised_at=q.ts,
+                    older=at < self.inp.now - RECENT,
+                    badges=["waiting for an answer"],
+                    source={"session": q.session},
                 )
+                self._own(card, owner, q.session)
+                self.tally[(owner[0], "questions_waiting")] += 1
+                self.cards.append(card)
                 continue
             if res.outcome != "answered":
                 continue
-            target = self._plan_for_question(q.session, at)
+            target = self._plan_for_question(q, at)
             card = cards_by_id.get(target) if target else None
             if card is not None:
                 card.decided.extend(f"{qq} → {a}" for qq, a in res.answers)
 
-    def _plan_for_question(self, session: str, at: datetime) -> str | None:
-        """The plan a question shaped: the first approved at or after it, else the last one."""
-        groups = self.groups.get(session) or []
-        for g in groups:
+    def _plan_for_question(self, q: object, at: datetime) -> str | None:
+        """The plan a question shaped: the first approved at or after it, else the last one,
+        among the plans held by a session holding the question."""
+        holders = self.inp.scan.holding("question", q.id, q.session)  # type: ignore[attr-defined]
+        keys = {self.call_key[g.first.id] for s in holders for g in self.groups.get(s, ())}
+        plans = sorted((self.merged[k] for k in keys), key=lambda g: (_t(g.last.ts), g.first.id))
+        for g in plans:
             if _t(g.last.ts) >= at:
                 return ids.plan_id(g.first.id)
-        return ids.plan_id(groups[-1].first.id) if groups else None
+        return ids.plan_id(plans[-1].first.id) if plans else None
 
     def wraps(self) -> None:
         needs_by_session: dict[str, list[Card]] = defaultdict(list)
@@ -547,31 +781,42 @@ class _Deriver:
             )
             if twin is not None:
                 self._raise(twin, 1, w.session, w.ts)
+                self.tally[(self.owner[twin.id][0], "wrap_asks")] += 1
                 continue
             at = _t(w.ts)
             # The recap tells of the whole session, often several games: the ask alone decides.
             sub, reason = self._transcript_sub(w.session, at, w.ask)
             nxt = self._next_human(w.session, at)
-            self.cards.append(
-                Card(
-                    id=ids.wrap_id(w.id),
-                    kind="wrap",
-                    column=NEEDS_YOU,
-                    title=w.ask[:200],
-                    sub=sub,
-                    sub_reason=reason,
-                    body=w.recap,
-                    event_at=w.ts,
-                    raised_at=w.ts,
-                    badges=list(w.actions),
-                    older=at < self.inp.now - RECENT,
-                    suggested_evidence=nxt.text if nxt else "",
-                    source={"session": w.session},
-                )
+            card = Card(
+                id=ids.wrap_id(w.id),
+                kind="wrap",
+                column=NEEDS_YOU,
+                title=w.ask[:200],
+                sub=sub,
+                sub_reason=reason,
+                body=w.recap,
+                event_at=w.ts,
+                raised_at=w.ts,
+                badges=list(w.actions),
+                older=at < self.inp.now - RECENT,
+                suggested_evidence=nxt.text if nxt else "",
+                source={"session": w.session},
             )
+            self._own(card, self._ask_owner(w.session, at, w.ask), w.session)
+            self.tally[(self.owner[card.id][0], "wrap_asks")] += 1
+            self.cards.append(card)
+
+    def headings(self) -> None:
+        for _uuid, session in self.inp.scan.empty_needs.items():
+            self.tally[(self._folder(session), "needs_headings_without_items")] += 1
 
 
-def derive(inp: Inputs) -> tuple[list[Card], list[str]]:
+def derive(
+    inp: Inputs, counts: dict[str, int] | None = None, extras: dict | None = None
+) -> tuple[list[Card], list[str]]:
+    """The project's cards. With a router, transcript cards another board owns are left out,
+    `counts` (when given) receives this board's share of the transcript items, and `extras`
+    receives `handover`: the ids of transcript cards another board owns, with that board."""
     d = _Deriver(inp)
     d.backlog()
     d.roadmap()
@@ -580,8 +825,17 @@ def derive(inp: Inputs) -> tuple[list[Card], list[str]]:
     d.needs()
     d.questions()
     d.wraps()
+    d.headings()
+    cards = [c for c in d.cards if c.kind not in TRANSCRIPT_KINDS or d.mine(c.id)]
+    handover = {cid: owner[0] for cid, owner in d.owner.items() if owner[0] != inp.project}
+    if extras is not None:
+        extras["handover"] = handover
+    if counts is not None:
+        for (proj, key), n in d.tally.items():
+            if proj == inp.project:
+                counts[key] = counts.get(key, 0) + n
     order = {c: i for i, c in enumerate(COLUMNS)}
-    d.cards.sort(
+    cards.sort(
         key=lambda c: (order[c.column], -_t(c.event_at).timestamp() if c.event_at else 0, c.id)
     )
-    return d.cards, d.warnings
+    return cards, d.warnings

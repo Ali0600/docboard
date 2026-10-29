@@ -51,14 +51,25 @@ board older than two minutes refreshes itself in the background; "Sync now" does
   A PR belongs to the game its title names, else its branch prefix (an agent's own `codex/` or
   `claude/` looked past), else most of the files of its squash commit; a PR touching three or more
   games is the project's own ("repo-wide").
-- **Transcripts** (`transcripts.py`) are the project's `~/.claude/projects/` folders, its
-  worktrees' included. Each line is checked with byte substrings before any JSON is parsed. Items
-  come only from main-session assistant text and tool calls, never from tool results, which can
-  hold a web page's text. A record copied into several files (forks, re-attaches) counts once.
-- **Plans** (`derive.py`) are cards per run of approvals with one title. A PR joins the plan its
-  session approved last before the PR was created. A plan is Done when every PR it named is in.
-  With no PR list it is Done once its session moved on, went quiet for a day, or merged nothing
-  for a week. A partly merged plan quiet for two weeks moves to Done with the gap on its card.
+- **Transcripts** (`transcripts.py`) are every configured project's `~/.claude/projects/`
+  folders, read in one pass (worktrees' included; folder names compared ignoring case), and a file
+  that has not changed is not read again. Each line is checked with byte substrings before any
+  JSON is parsed. Items come only from main-session assistant text and tool calls, never from tool
+  results, which can hold a web page's text. A record copied into several files (forks,
+  continued sessions) counts once, and every session holding a copy is known.
+- **Which board** (`route.py`): a session filed under one project often works in another. An
+  ask goes to the one project (or one of its games) its text names, else the project its turn's
+  files are in, else the project its transcript is filed under; a plan goes where most of its PRs
+  went. Every project's sync gives the same answer, so a card is on exactly one board. An ask
+  that names no game and touched no game's files sits at the project's root.
+- **Plans** (`derive.py`) are cards per run of approvals with one title, one card however many
+  continued sessions hold it. A PR joins the plan its session approved last before the PR was
+  created, a continued session's copy of the plan included; a PR titled "PR 1" or "PR A" after
+  the plan already has one starts a new series and is not that plan's. A plan is Done when every
+  PR it named is in. With no PR list it is Done once its session moved on, went quiet for a day,
+  or merged nothing for a week; in a repo with no GitHub remote it is Done once its session moved
+  on or went quiet. A partly merged plan quiet for two weeks moves to Done with the gap on its
+  card. A plan whose PRs are in another configured repo shows them as "+N in <project>".
 - **Ids** (`ids.py`) come from content, never a path, so a doc moved into a game's folder keeps
   its cards; they are frozen behind `ID_VERSION`.
 - **The store** (`store.py`, SQLite, owner-only) keeps the last sync's cards and your moves. A move
