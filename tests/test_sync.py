@@ -415,7 +415,12 @@ def test_every_transcript_card_is_on_exactly_one_board(tmp_path: Path) -> None:
         *edits,
         f.assistant_text("s1", "a1", "2026-10-26T09:20:00Z", f.needs_block("Do — restart it")),
         *f.plan_approval("s1", "2026-10-26T09:30:00Z", "p1", "# More"),
-    ]
+        f.tool_use("s1", "ss1", "2026-10-26T09:40:00Z", "mcp__ccd_session__start_session", "st1",
+                   {"initiation": "own_initiative", "title": "Speed up the tool's tests",
+                    "prompt": "x", "context": "fresh"}),
+        f.tool_result("s1", "ss2", "2026-10-26T09:40:00Z", "st1",
+                      'Proposed "Speed up the tool\'s tests" (task_id: task_ab12).'),
+    ]  # fmt: skip
     f.write(
         tmp_path / "claude" / "projects" / encode_path(one) / "s1.jsonl",
         [dict(r, cwd=str(one)) for r in recs],
@@ -426,10 +431,10 @@ def test_every_transcript_card_is_on_exactly_one_board(tmp_path: Path) -> None:
     )
     cfg = Config(projects=projects, claude_home=tmp_path / "claude")
     a, b = (sync.collect(cfg, p, NOW) for p in projects)
-    kinds = ("needs", "question", "wrap", "plan")
+    kinds = ("needs", "question", "wrap", "plan", "proposal")
     ids_a = {c.id for c in a.cards if c.kind in kinds}
     ids_b = {c.id for c in b.cards if c.kind in kinds}
-    assert ids_a == {"ny:a0:1", "pl:p1"} and ids_b == {"ny:a1:1"}
+    assert ids_a == {"ny:a0:1", "pl:p1"} and ids_b == {"ny:a1:1", "ss:st1"}
     assert (a.counts["needs_items_here"], b.counts["needs_items_here"]) == (1, 1)
     assert (a.counts["plan_calls_here"], b.counts["plan_calls_here"]) == (1, 0)
     # The floors count what the parser finds in every board's transcripts, so a card moving
