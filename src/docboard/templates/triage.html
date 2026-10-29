@@ -5,14 +5,52 @@
 <h1>Needs you: {{ items|length }}</h1>
 <p class="muted">Everything still in Needs you, newest first. The line under each is your next message in that
 session: a hint only, never applied.</p>
-{% if older %}
-<form method="post" action="/p/{{ project.name|urlencode }}/triage" class="bulk">
-  <input type="hidden" name="action" value="resolve_older">
-  <button type="submit">Resolve all {{ older }} older than 14 days</button>
-</form>
+<nav class="chips" aria-label="Games">
+  <a class="chip{% if not sub %} on{% endif %}" href="{{ url() }}">All</a>
+  <a class="chip{% if sub == "_root" %} on{% endif %}" href="{{ url(sub="_root") }}">{{ project.root_name }}</a>
+  {% for s in subs %}<a class="chip{% if s == sub %} on{% endif %}" href="{{ url(sub=s) }}">{{ s }}</a>{% endfor %}
+</nav>
+
+{% if undone %}<p class="notice">Undone: {{ undone }} card{{ "s" if undone != "1" }} put back{% if kept and kept != "0" %}; {{ kept }} left as they are, because something moved them since{% endif %}.</p>{% endif %}
+
+{% if batch %}
+<section class="batch">
+  <p>Your last {{ batch.kind }}: {{ batch_cards|length }} card{{ "s" if batch_cards|length != 1 }}, {{ batch.at[:16].replace("T", " ") }} UTC.</p>
+  <details><summary>Which</summary>
+    <ul>{% for c in batch_cards %}<li><a href="{{ c.href }}">{{ c.title }}</a> <span class="muted">{{ COLUMN_NAMES[c.col] }}</span></li>{% endfor %}</ul>
+  </details>
+  <form method="post" action="/p/{{ project.name|urlencode }}/triage/undo">
+    <input type="hidden" name="batch" value="{{ batch.id }}">
+    <input type="hidden" name="sub" value="{{ sub }}">
+    <button type="submit">Undo this batch</button>
+  </form>
+</section>
 {% endif %}
+
+{% if confirm_items is not none %}
+<section class="confirm">
+  <h2>Resolve these {{ confirm_items|length }}, raised more than 14 days ago?</h2>
+  <form method="post" action="/p/{{ project.name|urlencode }}/triage">
+    <input type="hidden" name="action" value="resolve">
+    <input type="hidden" name="sub" value="{{ sub }}">
+    <ul class="triage">
+      {% for c in confirm_items %}
+      <li><input type="hidden" name="ids" value="{{ c.id }}"><a href="{{ c.href }}">{{ c.title }}</a>
+        <span class="muted">{{ c.sub or project.root_name }} · {{ c.age }} ago</span></li>
+      {% endfor %}
+    </ul>
+    <div class="bulk">
+      <button type="submit">Resolve these {{ confirm_items|length }}</button>
+      <a class="button" href="{{ url(sub=sub) }}">Cancel</a>
+    </div>
+  </form>
+</section>
+{% else %}
+{% if older %}<p class="bulk"><a class="button" href="{{ url(sub=sub, confirm="older") }}">Resolve all {{ older }} older than 14 days…</a></p>{% endif %}
 <form method="post" action="/p/{{ project.name|urlencode }}/triage">
+  <input type="hidden" name="sub" value="{{ sub }}">
   <div class="bulk">
+    <a href="{{ url(sub=sub, select="all") }}" data-select-all>Select all</a>
     <button type="submit" name="action" value="resolve">Resolve selected</button>
     <button type="submit" name="action" value="dismiss">Dismiss selected</button>
   </div>
@@ -20,13 +58,14 @@ session: a hint only, never applied.</p>
     {% for c in items %}
     <li class="{% if c.older %}older{% endif %}">
       <label>
-        <input type="checkbox" name="ids" value="{{ c.id }}">
+        <input type="checkbox" name="ids" value="{{ c.id }}"{% if select_all %} checked{% endif %}>
         <a href="{{ c.href }}">{{ c.title }}</a>
       </label>
-      <span class="muted">{{ c.sub or project.root_name }} · {{ c.age }} ago{% if c.raised > 1 %} · raised {{ c.raised }}×{% endif %}</span>
+      <span class="muted">{{ c.sub or project.root_name }} · {{ c.age }} ago{% if c.raised > 1 %} · raised {{ c.raised }}×{% endif %}{% if c.reopened %} · raised again after you resolved it{% endif %}</span>
       {% if c.evidence %}<div class="evidence">You said next: {{ c.evidence }}</div>{% endif %}
     </li>
     {% endfor %}
   </ul>
 </form>
+{% endif %}
 {% endblock %}

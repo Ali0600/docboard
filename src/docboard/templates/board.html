@@ -14,7 +14,10 @@
     {% if c.raised > 1 %}<span>raised {{ c.raised }}×</span>{% endif %}
     {% if c.moved %}<span class="you">moved by you</span>{% endif %}
   </div>
-  {% if c.badges %}<div class="badges">{% for b in c.badges %}<span class="badge">{{ b }}</span>{% endfor %}</div>{% endif %}
+  {% if c.badges or c.reopened or c.source_gone %}<div class="badges">
+    {%- if c.reopened %}<span class="badge flag">raised again after you {{ "dismissed" if c.reopened_was == "hidden" else "resolved" }} it</span>{% endif %}
+    {%- if c.source_gone %}<span class="badge">transcript gone</span>{% endif %}
+    {%- for b in c.badges %}<span class="badge">{{ b }}</span>{% endfor %}</div>{% endif %}
   {% if c.child_cards %}
   <ul class="children">
     {% for ch in c.child_cards %}<li><a href="{{ ch.href }}">{{ ch.title }}</a> <span class="state state-{{ ch.col }}">{{ COLUMN_NAMES[ch.col] }}</span></li>{% endfor %}
@@ -37,8 +40,19 @@
     {% if last %}Last sync {{ last.started[:16].replace("T", " ") }} UTC, {{ last.status }}{% if last.ref_sha %}, docs at {{ last.ref_sha[:8] }}{% endif %}.{% else %}Not synced yet.{% endif %}
     {% if syncing %}<strong>Refreshing from the sources: reload in a few seconds.</strong>{% endif %}
   </p>
-  {% if last and last.status != "ok" %}<p class="warn">The last sync was refused: {{ last.message }}</p>{% endif %}
+  {% set shown = (" The board shows the sync of " ~ last_ok.started[:16].replace("T", " ") ~ " UTC.") if last_ok else "" %}
+  {% if last and last.status == "failed" %}
+  <p class="warn">The last sync failed, nothing was written: {{ last.message }}.{{ shown }}</p>
+  {% elif last and last.status == "refused" %}
+  <p class="warn">The last sync was refused, nothing was written: {{ last.message }}.{{ shown }}
+    If that drop is real (you trimmed a source, or old transcripts were cleaned up), accept it with
+    <code>{{ accept_cmd }}</code></p>
+  {% elif last %}
+  {% if last.message %}<p class="muted">{{ last.message }}</p>{% endif %}
   {% for d in degraded %}<p class="warn">Degraded: {{ d }}. PR and plan cards keep their last good state.</p>{% endfor %}
+  {% endif %}
+  {% if warnings %}<details class="warnings"><summary>{{ warnings|length }} warning{{ "s" if warnings|length != 1 }} from the last sync</summary>
+    <ul>{% for w in warnings %}<li>{{ w }}</li>{% endfor %}</ul></details>{% endif %}
   <div class="actions">
     <form method="post" action="/p/{{ project.name|urlencode }}/sync">
       <input type="hidden" name="back" value="{{ back }}">

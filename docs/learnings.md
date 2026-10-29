@@ -2,6 +2,21 @@
 
 Teachable things that came up building docboard. Newest first.
 
+### A safety check that runs before the degrade switch turns an outage into a refusal
+
+A collapse check ("a source fell to zero: refuse the sync") and an outage switch ("gh is down:
+keep the last PR states") were both right on their own. In that order, the check saw the
+outage's zero PRs first and refused the whole sync, so the freeze never ran, and the Needs-you
+items, which have nothing to do with gh, stopped arriving too.
+
+**Why it came up:** the survey reproduced it with a throwaway database: counts with
+`prs_merged: 0` and a gh failure gave "REFUSED: prs_merged: 10 → 0". The existing test passed
+only because its fixture kept `prs_merged` at 10.
+
+**Takeaway:** when one guard can make another's input look broken, decide the degraded state
+first and let the guard skip what it explains; then test the pair with the outage's own numbers,
+and keep an outage's zeros out of the next baseline.
+
 ### Python's `HTTPServer` looks its own address up in DNS when it binds
 
 `http.server.HTTPServer.server_bind` calls `socket.getfqdn(host)` to fill `server_name`. On this

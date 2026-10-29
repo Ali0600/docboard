@@ -11,6 +11,7 @@ from pathlib import Path
 
 _SLUG = re.compile(r"^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$")
 FIELDS = "number,title,state,createdAt,mergedAt,closedAt,headRefName"
+TIMEOUT = 120.0  # seconds; a hung gh (a login prompt, a dead network) degrades the sync
 
 
 class GhError(RuntimeError):
@@ -75,11 +76,20 @@ def fetch(repo: str, gh: str, limit: int = 2000) -> list[PullRequest]:
         "--json",
         FIELDS,
     ]
-    done = subprocess.run(cmd, capture_output=True, check=False, timeout=120)  # noqa: S603 - fixed argv
+    try:
+        done = subprocess.run(cmd, capture_output=True, check=False, timeout=TIMEOUT)  # noqa: S603 - fixed argv
+    except subprocess.TimeoutExpired:
+        raise GhError(f"gh pr list timed out after {TIMEOUT:g} s") from None
     if done.returncode != 0:
         err = done.stderr.decode("utf-8", "replace").strip()[:300]
         raise GhError(f"gh pr list exit {done.returncode}: {err}")
-    prs = parse(repo, done.stdout.decode("utf-8"))
+    try:
+        prs = parse(repo, done.stdout.decode("utf-8"))
+    except (ValueError, TypeError, KeyError, AttributeError) as e:
+        # A banner, a changed format: gh answered, but not with the PR list.
+        raise GhError(
+            f"gh pr list printed something that is not the expected JSON ({e!r:.80})"
+        ) from None
     if len(prs) >= limit:
         raise GhError(
             f"gh returned {len(prs)} PRs, the limit: raise the limit rather than drop the rest"

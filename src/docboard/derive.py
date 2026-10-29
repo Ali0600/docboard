@@ -55,6 +55,7 @@ class Card:
     suggested_evidence: str = ""  # shown to the owner, never applied
     raised: int = 1
     older: bool = False
+    raised_at: str = ""  # the latest raise of an ask ("" for anything else: its event_at)
 
     def to_json(self) -> dict:
         return dict(self.__dict__)
@@ -140,6 +141,21 @@ class _Deriver:
         if not counts:
             return None
         return self.att.by_branch(counts.most_common(1)[0][0])
+
+    def _next_human(self, session: str, at: datetime) -> object | None:
+        return next((h for h in self.humans.get(session, ()) if _t(h.ts) > at), None)
+
+    def _raise(self, card: Card, times: int, session: str, ts: str) -> None:
+        """An ask raised again: one card, whose age, Older fold and "you said next" follow the
+        latest raise, while `event_at` keeps the first."""
+        card.raised += times
+        at = _t(ts)
+        if at <= _t(card.raised_at or card.event_at):
+            return
+        card.raised_at = ts
+        card.older = at < self.inp.now - RECENT
+        nxt = self._next_human(session, at)
+        card.suggested_evidence = nxt.text if nxt else ""
 
     def _prev_human(self, session: str, at: datetime) -> datetime:
         times = [_t(h.ts) for h in self.humans.get(session, ())]
@@ -432,11 +448,11 @@ class _Deriver:
                 # Raised again later in the same session (turn-audit's similar(), 0.4).
                 twin = next((c for c, title in kept if similar(it.title, [title])), None)
                 if twin is not None:
-                    twin.raised += 1
+                    self._raise(twin, 1, session, it.ts)
                     continue
                 at = _t(it.ts)
                 sub, reason = self._transcript_sub(session, at, it.title, it.body)
-                nxt = next((h for h in self.humans.get(session, ()) if _t(h.ts) > at), None)
+                nxt = self._next_human(session, at)
                 card = Card(
                     id=ids.needs_id(it.uuid, it.n),
                     kind="needs",
@@ -446,6 +462,7 @@ class _Deriver:
                     sub_reason=reason,
                     body=it.body,
                     event_at=it.ts,
+                    raised_at=it.ts,
                     older=at < self.inp.now - RECENT,
                     suggested_evidence=nxt.text if nxt else "",
                     source={
@@ -470,7 +487,7 @@ class _Deriver:
                 None,
             )
             if twin is not None:
-                twin.raised += card.raised
+                self._raise(twin, card.raised, card.source["session"], card.raised_at)
                 continue
             kept_all.append((card, title))
             self.cards.append(card)
@@ -524,11 +541,12 @@ class _Deriver:
                 (c for c in needs_by_session.get(w.session, ()) if similar(w.ask, [c.title])), None
             )
             if twin is not None:
-                twin.raised += 1
+                self._raise(twin, 1, w.session, w.ts)
                 continue
             at = _t(w.ts)
             # The recap tells of the whole session, often several games: the ask alone decides.
             sub, reason = self._transcript_sub(w.session, at, w.ask)
+            nxt = self._next_human(w.session, at)
             self.cards.append(
                 Card(
                     id=ids.wrap_id(w.id),
@@ -539,8 +557,10 @@ class _Deriver:
                     sub_reason=reason,
                     body=w.recap,
                     event_at=w.ts,
+                    raised_at=w.ts,
                     badges=list(w.actions),
                     older=at < self.inp.now - RECENT,
+                    suggested_evidence=nxt.text if nxt else "",
                     source={"session": w.session},
                 )
             )

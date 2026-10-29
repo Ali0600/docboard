@@ -9,7 +9,10 @@
     · {{ card.sub or (project.root_name if project else "") }} ({{ card.sub_reason }})
     {% if card.age %} · {{ card.age }} ago{% endif %}{% if card.raised > 1 %} · raised {{ card.raised }}×{% endif %}
   </p>
-  {% if card.badges %}<div class="badges">{% for b in card.badges %}<span class="badge">{{ b }}</span>{% endfor %}</div>{% endif %}
+  {% if card.badges or card.reopened or card.source_gone %}<div class="badges">
+    {%- if card.reopened %}<span class="badge flag">raised again after you {{ "dismissed" if card.reopened_was == "hidden" else "resolved" }} it</span>{% endif %}
+    {%- if card.source_gone %}<span class="badge">transcript gone: it stays until you act on it</span>{% endif %}
+    {%- for b in card.badges %}<span class="badge">{{ b }}</span>{% endfor %}</div>{% endif %}
 
   <div class="actions">
     <form method="post" action="{{ card.href }}/move">

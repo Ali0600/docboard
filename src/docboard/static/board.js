@@ -1,7 +1,19 @@
 // docboard: drag a card onto a column to move it. Every card's "Move" control does the same
 // without this script. The POST carries the page's own Origin, which the server checks.
+// On triage, "Select all" ticks every box in its form; without the script it is a link to the
+// same page with every box ticked.
 "use strict";
 (() => {
+  for (const link of document.querySelectorAll("[data-select-all]")) {
+    link.addEventListener("click", (e) => {
+      const form = link.closest("form");
+      if (!form) return;
+      e.preventDefault();
+      const boxes = [...form.querySelectorAll('input[type="checkbox"][name="ids"]')];
+      const all = boxes.every((b) => b.checked);
+      for (const b of boxes) b.checked = !all;
+    });
+  }
   let dragged = null;
   for (const card of document.querySelectorAll("[data-card-id]")) {
     card.addEventListener("dragstart", (e) => {

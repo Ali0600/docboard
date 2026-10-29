@@ -7,9 +7,9 @@ remembered in a local SQLite file. A monorepo's sub-projects (each game of a gam
 board of their own.
 
 Status: in use. `docboard serve` shows the board; cards can be dragged, resolved, dismissed, given
-another game or added by hand, and a triage page clears old Needs-you items in bulk. A Claude Code
-`/board` command runs `docboard board` from any session. It replaced an earlier dashboard on
-2026-10-27.
+another game or added by hand, and a triage page clears Needs-you items in bulk, per game, with a
+confirm step and an undo for each batch. A Claude Code `/board` command runs `docboard board` from
+any session. It replaced an earlier dashboard on 2026-10-27.
 
 ## Run it
 
@@ -19,6 +19,7 @@ cp config/projects.example.toml config/projects.toml   # then list your projects
 uv run docboard sync                       # read every source into data/board.db
 uv run docboard serve                      # the board on http://127.0.0.1:8742
 uv run docboard board --cwd ~/some/folder  # sync the board that folder belongs to; print its link
+uv run docboard sync --accept-drop --project p   # store a sync refused because a source really shrank
 ./scripts/gate.sh                          # lint, format check and tests: what CI runs
 ```
 
@@ -60,9 +61,13 @@ board older than two minutes refreshes itself in the background; "Sync now" does
   holds while the card's source still says what it said when you moved it; when the source moves
   the card, your move is dropped and the card's history says so. Needs-you cards never move by
   themselves, so resolving or dismissing one is permanent. A reworded Backlog bullet keeps your
-  moves; a card gone from its source is kept and listed, never deleted. A sync whose source
-  collapsed (fell to zero, or by more than half, since the last good one) writes nothing; with
-  GitHub unreachable, PR and plan cards keep their last good state.
+  moves; a card gone from its source is kept and listed, never deleted. An ask raised again after
+  you resolved it comes back to Needs you, aged from its latest raise, and an open ask stays even
+  when Claude Code deletes its transcript. A sync whose source collapsed (fell to zero, or by more
+  than half, since the last good one) writes nothing and says so on the page, with the
+  `--accept-drop` command for a drop that is real. With GitHub unreachable the rest still syncs,
+  while PR and plan cards keep their last good state. A sync that crashes is recorded as failed,
+  with its reason on the page, and one broken project never stops the others.
 - **The page** (`web.py`, FastAPI and Jinja2) answers only on the loopback address, and only to a
   loopback Host header (against DNS rebinding). Nothing changes except through a POST from the
   board's own page (Origin, or the browser's Sec-Fetch-Site), so an outside page can neither read

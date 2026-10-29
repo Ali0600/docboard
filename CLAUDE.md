@@ -6,7 +6,8 @@
 |---|---|
 | `./scripts/gate.sh` | `uv sync --locked`, `ruff check`, `ruff format --check`, `pytest`; every step runs and reports, non-zero if any failed. CI runs exactly this. |
 | `uv run docboard sync --dry-run [--project p] [--sample n] [--json file] [--baseline file]` | Reads every source of the configured projects and prints counts per source and the board as a table; `--json` writes every card (owner-only file), `--baseline` exits 1 when a source collapsed since that file. |
-| `uv run docboard sync [--project p] [--db file]` | Reads every source into the board's database (`data/board.db`) under a machine-wide lock; refuses, writing nothing, when a source collapsed since the last good sync. |
+| `uv run docboard sync [--project p] [--db file]` | Reads every source into the board's database (`data/board.db`) under a machine-wide lock; refuses, writing nothing, when a source collapsed since the last good sync. A crash is stored as a `failed` run and the next project still syncs (exit 1). |
+| `uv run docboard sync --accept-drop --project p` | Stores a sync the floor refused, when the owner says the drop is real; only the drops the last refusal named are accepted. The owner's call: never run it unasked. |
 | `uv run docboard serve [--port 8742]` | The board on `http://127.0.0.1:8742`; any host but loopback is refused. Start it in the background and check it in the built-in browser. |
 | `uv run docboard board [--cwd dir] [--no-sync] [--port 8742]` | Finds the configured project (and sub-project) a folder belongs to, a git worktree's included, syncs that project and prints its board's link and whether the page is running (exit 2: in no configured project; 1: the sync was not stored). The global `/board` command runs it from a session's folder. |
 | `uv run docboard diff a.json b.json [--kinds idea,roadmap] [--strict]` | Card ids only in one run, and fields changed in both; `--strict` exits 1 when an id came or went (the check a docs move must pass). |
@@ -32,6 +33,8 @@
   never includes a file path. Changing a derivation means a new version and a migration of stored
   moves.
 - **A Needs-you item never leaves that column by derivation**; only the owner's action moves it.
+  A raise that comes after the owner resolved or dismissed it reopens it (the owner's call,
+  2026-10-28), and an open one stays when its transcript is deleted.
 - **The page's guards stay whole:** the loopback Host allowlist, the same-origin check on every
   POST (`web._same_origin`), escaped output (no `|safe` on source text), http(s)-only links, the
   Content-Security-Policy with no script but `static/board.js`, and no third-party JavaScript. A
