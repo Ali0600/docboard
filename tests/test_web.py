@@ -258,3 +258,74 @@ def test_a_card_can_be_given_another_game(env: tuple[TestClient, Path]) -> None:
 
 def test_serve_refuses_a_non_loopback_address() -> None:
     assert cli.main(["serve", "--host", "0.0.0.0"]) == 2  # noqa: S104 - the refused case
+
+
+def test_an_undo_that_put_nothing_back_says_so(env: tuple[TestClient, Path]) -> None:
+    client, db = env
+    client.post("/p/demo/triage", data={"action": "resolve", "ids": ["ny:1"]}, headers=SAME)
+    batch = batch_of(client.get("/p/demo/triage").text)
+    with Store(db) as s:
+        s.move("ny:1", "next", now())  # moved again since: undo leaves it
+    r = client.post("/p/demo/triage/undo", data={"batch": batch}, headers=SAME)
+    page = client.get(r.headers["location"]).text
+    assert "Nothing was put back" in page
+
+
+def test_the_undo_notice_shows_only_numbers(env: tuple[TestClient, Path]) -> None:
+    client, _ = env
+    r = client.get("/p/demo/triage?undone=all%20your%20cards%20were%20deleted")
+    assert "all your cards were deleted" not in r.text
+
+
+def test_triage_keeps_its_game_across_a_post_and_reads_root(env: tuple[TestClient, Path]) -> None:
+    client, db = env
+    r = client.post("/p/demo/triage", data={"action": "dismiss", "ids": ["ny:b"], "sub": "beta"},
+                    headers=SAME)  # fmt: skip
+    assert r.headers["location"] == "/p/demo/triage?sub=beta"
+    with Store(db) as s:
+        s.apply(
+            result([card("ny:r", "needs_you", kind="needs", title="A root ask", sub="")]), now()
+        )
+    page = client.get("/p/demo/triage?sub=_root").text
+    assert "A root ask" in page and "An old ask" not in page
+
+
+def test_triage_moves_only_this_boards_cards(tmp_path: Path) -> None:
+    cfg = Config(projects=(Project(name="one", path=tmp_path), Project(name="two", path=tmp_path)),
+                 claude_home=tmp_path / "c")  # fmt: skip
+    db = tmp_path / "data" / "board.db"
+    with Store(db) as s:
+        s.apply(result([card("ny:1", "needs_you", kind="needs")], project="one"), now())
+        s.apply(result([card("ny:2", "needs_you", kind="needs")], project="two"), now())
+    client = TestClient(create_app(cfg, db, PORT), base_url=BASE, follow_redirects=False)
+    client.post("/p/one/triage", data={"action": "resolve", "ids": ["ny:1", "ny:2"]}, headers=SAME)
+    with Store(db) as s:
+        assert (s.card("ny:1")["col"], s.card("ny:2")["col"]) == ("done", "needs_you")
+    assert client.post("/p/one/triage", data={"action": "burn"}, headers=SAME).status_code == 400
+
+
+def test_badges_for_a_reopened_ask_and_a_gone_transcript(tmp_path: Path) -> None:
+    cfg = Config(projects=(Project(name="demo", path=tmp_path),), claude_home=tmp_path / "c")
+    db = tmp_path / "data" / "board.db"
+    with Store(db) as s:
+        a = card("ny:1", "needs_you", kind="needs", title="Reopened", event_at=now(-3))
+        b = card("ny:2", "needs_you", kind="needs", title="Orphan", source={"session": "s9"})
+        r = result([a, b])
+        r.sessions = {"s9"}
+        s.apply(r, now())
+        s.dismiss("ny:1", now(-2))
+        again = card("ny:1", "needs_you", kind="needs", title="Reopened", event_at=now(-3),
+                     raised=2, raised_at=now(-1))  # fmt: skip
+        s.apply(result([again]), now())  # and ny:2's transcript is gone
+    client = TestClient(create_app(cfg, db, PORT), base_url=BASE, follow_redirects=False)
+    page = client.get("/p/demo").text
+    assert "raised again after you dismissed it" in page and "transcript gone" in page
+    triage = client.get("/p/demo/triage").text
+    assert "raised again after you dismissed it" in triage
+
+
+def test_confirm_with_nothing_older_shows_the_list(env: tuple[TestClient, Path]) -> None:
+    client, db = env
+    client.post("/p/demo/triage", data={"action": "resolve", "ids": ["ny:old"]}, headers=SAME)
+    page = client.get("/p/demo/triage?confirm=older").text
+    assert "Resolve these 0" not in page and 'value="ny:1"' in page

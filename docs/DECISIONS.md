@@ -40,10 +40,12 @@ page's thread and retried on every view, and one broken project stopped `docboar
   fold counted from the latest raise: *chosen* by the owner (sessions re-raise only when
   something changed).
   - **Keep it Done with a badge:** *rejected*: the change would show only to someone reading Done.
-- **A card id another board holds is adopted** (the row moves, with the owner's moves and history,
-  and is never taken back while that board still derives it): *chosen*, ahead of cards following
-  their files between boards. Transcript ids are global by design, `/i/<id>` links stay valid,
-  and no five-table rebuild touches the live database.
+- **A card id another board holds is adopted once that board stops deriving it** (the row moves,
+  with the owner's moves and history; until then the newcomer reports it as "elsewhere"):
+  *chosen*, ahead of cards following their files between boards. Transcript ids are global by
+  design, `/i/<id>` links stay valid, and no five-table rebuild touches the live database. The
+  first holder keeps an id while it still derives it, so any number of boards that derive one id
+  never trade it (the review found three nested boards could under an earlier rule).
   - **Key cards by (project, id):** *rejected* for those reasons; a PR two nested projects both
     derive shows on one board with a warning instead.
 - **Every schema change of the run in one migration:** *chosen*, so the owner's running page is
@@ -56,6 +58,10 @@ page's thread and retried on every view, and one broken project stopped `docboar
     with no script under the Content-Security-Policy.
 - A crash is a `failed` run (its type and first line, paths shown as names, never a traceback),
   which also restarts the page's two-minute wait, so a broken source is not resynced on every view.
+- A known limit: an ask raised in one session and again in another becomes two cards once the
+  first session's transcript is deleted (the kept-open first card, and a new one from the second
+  session). Rare (it needs a 30-day-old transcript and a later re-raise); resolving either clears
+  it.
 
 Revisit hook: `Store.apply` (`_baseline`, `floor_drops`), `runner.run_sync`, `Store.move_batch` and
 `undo_batch`.

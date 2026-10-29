@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from docboard.config import REPO_ROOT
-from docboard.derive import COLUMNS, DONE, NEEDS_YOU
+from docboard.derive import COLUMNS, DONE, NEEDS_YOU, RECENT
 from docboard.sync import GH_FLOOR_KEYS, SyncResult, floor_drops, gh_degraded
 from docboard.textsim import jaccard
 
@@ -301,12 +301,17 @@ class Store:
         return base
 
     def _refused_keys(self, project: str) -> set[str] | None:
-        """The keys the newest refusal named, when it is newer than the last good run."""
-        last = self.last_run(project)
+        """The keys the newest refusal since the last good run named (a failed run in between
+        does not hide it), or None when nothing was refused since."""
         ok = self.last_run(project, ok_only=True)
-        if last is None or last["status"] != "refused" or (ok and ok["id"] > last["id"]):
+        row = self.db.execute(
+            "SELECT message FROM sync_run WHERE project = ? AND status = 'refused' AND id > ?"
+            " ORDER BY id DESC LIMIT 1",
+            (project, ok["id"] if ok else 0),
+        ).fetchone()
+        if row is None:
             return None
-        return {p.split(":", 1)[0].strip() for p in last["message"].split("; ") if ":" in p}
+        return {p.split(":", 1)[0].strip() for p in row["message"].split("; ") if ":" in p}
 
     def apply(self, result: SyncResult, now: str, accept_drop: bool = False) -> ApplyReport:
         """Writes one sync's cards in one transaction, or nothing when a source collapsed.
@@ -323,7 +328,11 @@ class Store:
         if drops and accept_drop:
             named = self._refused_keys(result.project)
             accepted = {k: v for k, v in drops.items() if named is None or k in named}
-            drops = {k: v for k, v in drops.items() if k not in accepted}
+            if len(accepted) < len(drops):
+                accepted = {}  # a drop no refusal showed: refuse, naming every drop this time,
+                # so the owner sees them all and the next accept takes them in one step
+            else:
+                drops = {}
         if drops:
             problems = list(drops.values())
             self._run(result, now, "refused", "; ".join(problems))
@@ -402,9 +411,10 @@ class Store:
             if old is None:
                 other = db.execute("SELECT * FROM card WHERE id = ?", (card.id,)).fetchone()
                 if other is not None:
-                    if other["gone_at"] is None and other["moved_from"] == result.project:
-                        # It moved from here to that board, which still derives it: taking it
-                        # back would make the two boards trade it on every sync.
+                    if other["gone_at"] is None:
+                        # Another board still derives it: it stays there (boards that both
+                        # derive one id would otherwise trade it on every sync). Once that board
+                        # stops deriving it, this one takes it over.
                         report.elsewhere.append(card.id)
                         continue
                     self._adopt(other, result, now, report)
@@ -451,6 +461,16 @@ class Store:
         ]  # fmt: skip
         vanished = [r for r in vanished if not self._keep_open(r, result, now, report)]
         self._renames(vanished, fresh, now, report)
+        # An ask kept open after its transcript went, which the owner then put back in Needs you
+        # (an undo, a move): open again, not gone.
+        for r in db.execute(
+            "SELECT * FROM board WHERE project = ? AND gone_at IS NOT NULL"
+            " AND source_gone_at IS NOT NULL AND col = ?",
+            (result.project, NEEDS_YOU),
+        ).fetchall():
+            if r["id"] not in seen and self._keep_open(r, result, now, report):
+                db.execute("UPDATE card SET gone_at = NULL WHERE id = ?", (r["id"],))
+                self._event(now, "sync", r["id"], "back", "back in Needs you, kept open")
 
     def _adopt(self, other: sqlite3.Row, result: SyncResult, now: str, report: ApplyReport) -> None:
         """A card another board held moves here, with the owner's moves and its history."""
@@ -515,6 +535,12 @@ class Store:
                 now, "sync", r["id"], "source-gone",
                 "its transcript is gone; it stays in Needs you until you act on it",
             )  # fmt: skip
+        # No derive sees it any more, so its Older fold is kept up to date here.
+        raised, at = _ts(r["raised_at"] or r["event_at"]), _ts(now)
+        if raised is not None and at is not None:
+            older = int(raised < at - RECENT)
+            if older != r["older"]:
+                self.db.execute("UPDATE card SET older = ? WHERE id = ?", (older, r["id"]))
         report.kept_open += 1
         return True
 
@@ -632,8 +658,8 @@ class Store:
             items = []
             for card_id in dict.fromkeys(ids):
                 card = self.card(card_id)
-                if card is None or card["project"] != project:
-                    continue
+                if card is None or card["project"] != project or card["col"] == col:
+                    continue  # not this board's, or already there: nothing to undo later
                 before, after = self._move(card_id, col, now, kind)
                 items.append((card_id, before, after))
             if not items:
@@ -676,6 +702,10 @@ class Store:
                         (card_id, prev["col"], prev["col_derived_when_set"], prev["set_at"]),
                     )
                 self._event(now, "owner", card_id, "undo", f"undid the {batch['kind']}")
+                card = self.card(card_id)
+                if card["gone_at"] and card["source_gone_at"] and card["col"] == NEEDS_YOU:
+                    # A sync let it go once it was resolved; back in Needs you, it is kept open.
+                    self.db.execute("UPDATE card SET gone_at = NULL WHERE id = ?", (card_id,))
                 restored += 1
             self.db.execute("UPDATE batch SET undone_at = ? WHERE id = ?", (now, batch_id))
         return restored, kept

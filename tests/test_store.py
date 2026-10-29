@@ -236,13 +236,14 @@ def test_a_card_another_board_derives_moves_with_the_owners_moves(store: Store) 
     store.apply(result([ask], project="one"), now())
     store.resolve("ny:1", now())
     store.set_sub("ny:1", "beta", ["alpha", "beta"], now())
+    store.apply(result([], project="one"), now())  # routing moved it: one no longer derives it
     store.apply(result([ask], project="two"), now())
     row = store.card("ny:1")
     assert (row["project"], row["col"], row["sub"], row["moved_from"]) == (
         "two", "done", "beta", "one",
     )  # fmt: skip
     assert store.events("ny:1")[0]["detail"] == "moved here from one"
-    store.apply(result([], project="one"), now())  # the old board no longer derives it
+    store.apply(result([], project="one"), now())
     assert store.card("ny:1")["project"] == "two" and store.card("ny:1")["gone_at"] is None
     assert store.gone("one") == []
 
@@ -250,11 +251,11 @@ def test_a_card_another_board_derives_moves_with_the_owners_moves(store: Store) 
 def test_two_boards_deriving_one_id_do_not_flap(store: Store) -> None:
     pr = card("pr:acme/demo#1", "done", kind="pr")
     store.apply(result([pr], project="one"), now())
+    report = store.apply(result([pr], project="two"), now())
+    assert store.card(pr.id)["project"] == "one" and report.elsewhere == [pr.id]
+    store.apply(result([pr], project="one"), now())
     store.apply(result([pr], project="two"), now())
-    report = store.apply(result([pr], project="one"), now())
-    assert store.card(pr.id)["project"] == "two" and report.elsewhere == [pr.id]
-    store.apply(result([pr], project="two"), now())
-    assert store.card(pr.id)["project"] == "two"
+    assert store.card(pr.id)["project"] == "one"  # the first holder keeps it while it derives it
 
 
 def test_an_open_ask_outlives_its_transcript(store: Store) -> None:
@@ -320,3 +321,133 @@ def test_undoing_a_batch_restores_each_cards_previous_move(store: Store) -> None
     assert col(store, "ny:3") == "hidden"
     with pytest.raises(StoreError):
         store.undo_batch(batch, "demo", now())
+
+
+# --- PR A, after review ----------------------------------------------------------------------
+
+
+def test_a_failed_run_after_the_refusal_does_not_widen_the_accept(store: Store) -> None:
+    store.apply(result([]), now())
+    with pytest.raises(FloorError):
+        store.apply(result([], {**COUNTS, "backlog": 3}), now())
+    store.record_failed("demo", now(), "OSError: transient")
+    with pytest.raises(FloorError, match="needs_items"):
+        store.apply(result([], {**COUNTS, "backlog": 3, "needs_items": 0}), now(), accept_drop=True)
+    assert json.loads(store.last_run("demo", ok_only=True)["counts"])["needs_items"] == 8
+
+
+def test_a_second_drop_is_shown_then_accepted_in_one_more_step(store: Store) -> None:
+    store.apply(result([]), now())
+    with pytest.raises(FloorError):
+        store.apply(result([], {**COUNTS, "backlog": 3}), now())
+    worse = {**COUNTS, "backlog": 3, "needs_items": 0}
+    with pytest.raises(FloorError) as refused:
+        store.apply(result([], worse), now(), accept_drop=True)
+    assert "backlog" in str(refused.value) and "needs_items" in str(refused.value)  # both shown
+    report = store.apply(result([], worse), now(), accept_drop=True)
+    assert len(report.accepted) == 2
+
+
+def test_undoing_a_resolve_brings_back_an_ask_whose_transcript_is_gone(store: Store) -> None:
+    ask = card("ny:1", "needs_you", kind="needs", source={"session": "s1"})
+    r = result([ask])
+    r.sessions = {"s1"}
+    store.apply(r, now())
+    store.apply(result([]), now())  # transcript gone: kept open
+    batch = store.move_batch("demo", ["ny:1"], "done", "resolve", now())
+    store.apply(result([]), now())  # the owner acted: it may leave
+    assert store.card("ny:1")["gone_at"] is not None
+    assert store.undo_batch(batch, "demo", now()) == (1, 0)
+    row = store.card("ny:1")
+    assert row["gone_at"] is None and row["col"] == "needs_you"
+    store.apply(result([]), now())
+    assert store.card("ny:1")["gone_at"] is None  # and it stays, kept open again
+
+
+def test_three_boards_deriving_one_id_do_not_trade_it(store: Store) -> None:
+    pr = card("pr:acme/demo#1", "done", kind="pr")
+    for _ in range(3):
+        for board in ("one", "two", "three"):
+            store.apply(result([pr], project=board), now())
+    assert store.card(pr.id)["project"] == "one"
+    assert store.db.execute("SELECT COUNT(*) FROM event WHERE kind = 'moved'").fetchone()[0] == 0
+
+
+def test_a_card_moves_once_its_old_board_stops_deriving_it(store: Store) -> None:
+    ask = card("ny:1", "needs_you", kind="needs")
+    store.apply(result([ask], project="one"), now())
+    report = store.apply(result([ask], project="two"), now())
+    assert store.card("ny:1")["project"] == "one" and report.elsewhere == ["ny:1"]
+    store.apply(result([], project="one"), now())
+    store.apply(result([ask], project="two"), now())
+    assert store.card("ny:1")["project"] == "two" and store.card("ny:1")["gone_at"] is None
+
+
+def test_a_kept_open_ask_still_folds_into_older(store: Store) -> None:
+    ask = card("ny:1", "needs_you", kind="needs", source={"session": "s1"}, event_at=now(-20))
+    r = result([ask])
+    r.sessions = {"s1"}
+    store.apply(r, now())
+    assert store.card("ny:1")["older"] == 0  # the fixture's flag, as derive would leave it
+    store.apply(result([]), now())
+    assert store.card("ny:1")["older"] == 1
+
+
+def test_resolving_cards_already_resolved_makes_no_batch(store: Store) -> None:
+    store.apply(result([card("ny:1", "needs_you", kind="needs")]), now())
+    first = store.move_batch("demo", ["ny:1"], "done", "resolve", now())
+    assert store.move_batch("demo", ["ny:1"], "done", "resolve", now()) is None
+    assert store.last_batch("demo")["id"] == first
+
+
+def test_a_raise_after_a_dismiss_reopens_it_as_dismissed(store: Store) -> None:
+    store.apply(result([card("ny:1", "needs_you", kind="needs", event_at=now(-3))]), now())
+    store.dismiss("ny:1", now(-2))
+    again = card("ny:1", "needs_you", kind="needs", event_at=now(-3), raised=2, raised_at=now(-1))
+    store.apply(result([again]), now())
+    row = store.card("ny:1")
+    assert (row["col"], row["reopened_was"]) == ("needs_you", "hidden")
+    assert "after you dismissed it" in store.events("ny:1")[0]["detail"]
+
+
+@pytest.mark.parametrize("kind", ["wrap", "plan", "question"])
+def test_every_kind_of_open_ask_outlives_its_transcript(store: Store, kind: str) -> None:
+    ask = card(f"{kind}:1", "needs_you", kind=kind, source={"session": "s1"})
+    r = result([ask])
+    r.sessions = {"s1"}
+    store.apply(r, now())
+    store.apply(result([]), now())
+    assert store.card(f"{kind}:1")["gone_at"] is None
+
+
+def test_the_transcript_gone_mark_clears_when_it_is_read_again(store: Store) -> None:
+    ask = card("ny:1", "needs_you", kind="needs", source={"session": "s1"})
+    r = result([ask])
+    r.sessions = {"s1"}
+    store.apply(r, now())
+    store.apply(result([]), now())
+    assert store.card("ny:1")["source_gone_at"] is not None
+    store.apply(r, now())
+    assert store.card("ny:1")["source_gone_at"] is None
+
+
+def test_adopting_drops_a_game_this_board_lacks_and_writes_no_back_event(store: Store) -> None:
+    ask = card("ny:1", "needs_you", kind="needs", sub="alpha")
+    one = result([ask], project="one")
+    one.subs = ["alpha", "gamma"]
+    store.apply(one, now())
+    store.set_sub("ny:1", "gamma", ["alpha", "gamma"], now())
+    store.apply(result([], project="one"), now())  # gone from one
+    store.apply(result([ask], project="two"), now())  # two's games: alpha and beta
+    row = store.card("ny:1")
+    assert (row["project"], row["sub"]) == ("two", "alpha")
+    kinds = [e["kind"] for e in store.events("ny:1")]
+    assert "moved" in kinds and "back" not in kinds
+    assert "not one of this board's" in store.events("ny:1")[0]["detail"]
+
+
+def test_raised_at_reaches_the_board_view(store: Store) -> None:
+    again = card("ny:1", "needs_you", kind="needs", event_at=now(-20), raised=2, raised_at=now(-1))
+    store.apply(result([again]), now())
+    row = store.card("ny:1")
+    assert row["raised_at"] == again.raised_at and row["event_at"] == again.event_at

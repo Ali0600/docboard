@@ -165,7 +165,7 @@ def _card_view(row: object, now: datetime) -> dict:
         "age": _age(get("raised_at") or get("event_at") or get("created_at") or "", now),
         "reopened": bool(get("reopened_at")) and row["col"] == NEEDS_YOU,
         "reopened_was": get("reopened_was"),
-        "source_gone": bool(get("source_gone_at")),
+        "source_gone": bool(get("source_gone_at")) and not get("gone_at"),
         "parent": get("parent"),
         "children": json.loads(get("children", "[]")),
         "moved": bool(get("moved", 0)),
@@ -288,6 +288,7 @@ def create_app(cfg: Config, db_path: Path = DEFAULT_DB, port: int = 8742) -> Fas
     @app.get("/p/{name}/triage", response_class=HTMLResponse)
     def triage(request: Request, name: str, sub: str = "", select: str = "", confirm: str = "",
                undone: str = "", kept: str = "") -> Response:  # fmt: skip
+        undone_n, kept_n = _count(undone), _count(kept)  # numbers only: a link sets these
         project = board.project(name)
         if project is None:
             return not_found("project")
@@ -309,8 +310,8 @@ def create_app(cfg: Config, db_path: Path = DEFAULT_DB, port: int = 8742) -> Fas
         return templates.TemplateResponse(request, "triage.html", {
             "project": project, "items": items, "older": len(older), "sub": sub, "subs": subs,
             "select_all": select == "all",
-            "confirm_items": older if confirm == "older" else None,
-            "batch": batch, "batch_cards": batch_cards, "undone": undone, "kept": kept,
+            "confirm_items": older if confirm == "older" and older else None,
+            "batch": batch, "batch_cards": batch_cards, "undone": undone_n, "kept": kept_n or 0,
             "url": lambda **kw: triage_url(name, **kw),
         })  # fmt: skip
 
@@ -339,7 +340,7 @@ def create_app(cfg: Config, db_path: Path = DEFAULT_DB, port: int = 8742) -> Fas
                 restored, kept = store.undo_batch(batch, name, now().isoformat())
             except StoreError as e:
                 return PlainTextResponse(str(e), 400)
-        return RedirectResponse(triage_url(name, sub, undone=restored, kept=kept), 303)
+        return RedirectResponse(triage_url(name, sub, undone=str(restored), kept=str(kept)), 303)
 
     @app.post("/p/{name}/sync")
     def sync_now(name: str, back: str = Form(default="")) -> Response:
@@ -457,6 +458,11 @@ class _ManualRow:
         if k == "col":
             return self._d["col"]
         return self._d[k]
+
+
+def _count(value: str) -> int | None:
+    """A count from a query parameter, or None for anything that is not one."""
+    return int(value) if value.isdigit() and len(value) < 7 else None
 
 
 def _in_sub(card: dict, sub: str) -> bool:

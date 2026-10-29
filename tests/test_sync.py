@@ -285,3 +285,20 @@ def test_sync_accept_drop_stores_the_drop(
     assert "REFUSED" in out and "--accept-drop --project demo" in out
     assert cli.main([*args, "--accept-drop"]) == 0
     assert "ACCEPTED backlog: 10 → 3" in capsys.readouterr().out
+
+
+def test_describe_names_the_project_not_its_path(tmp_path: Path) -> None:
+    project = Project(name="demo", path=tmp_path / "repo")
+    home = Path.home()
+    e = OSError(f"cannot read {tmp_path / 'repo' / 'x'} or {home / 'y'}\nsecond line")
+    text = runner.describe(e, project)
+    assert text == "OSError: cannot read demo/x or ~/y"
+
+
+def test_dry_run_goes_on_past_a_broken_project(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conf = two_projects(tmp_path)
+    assert cli.main(["sync", "--dry-run", "--config", str(conf)]) == 1
+    out = capsys.readouterr().out
+    assert "broken: FAILED" in out and "demo: docs at" in out
