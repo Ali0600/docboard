@@ -8,10 +8,19 @@ on:
 permissions:
   contents: read
 
+# A newer push to a PR replaces the run still going for it; main's runs all finish.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   gate:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -20,4 +29,5 @@ jobs:
         with:
           version: "0.11.14"
       - name: Gate
+        shell: bash
         run: ./scripts/gate.sh
