@@ -549,28 +549,44 @@ class Store:
         db = self.db
         taken: set[str] = set()
         for old in vanished:
-            best, score = None, 0.0
+            best, key = None, None
             if old["kind"] in DOC_KINDS:
                 for new in fresh:
                     if new.kind != old["kind"] or new.id in taken:
                         continue
                     s = jaccard(old["title"], new.title)
-                    if s >= RENAME_SAME and s > score:
-                        best, score = new, s
+                    if s < RENAME_SAME:
+                        continue
+                    # Two bullets with one title: the one whose text also matches is the same.
+                    k = (s, jaccard(old["body"] or "", new.body or ""))
+                    if key is None or k > key:
+                        best, key = new, k
             if best is not None:
+                score = key[0]
                 taken.add(best.id)
                 db.execute(
                     "INSERT OR REPLACE INTO alias (old_id, new_id, similarity, at)"
                     " VALUES (?, ?, ?, ?)",
                     (old["id"], best.id, score, now),
                 )
+                detail = f"was {old['title'][:120]!r}"
+                ov = db.execute("SELECT * FROM override WHERE card_id = ?", (old["id"],)).fetchone()
+                if ov is not None and ov["col_derived_when_set"] != best.column:
+                    # Reworded and moved by its source at once: like any source move, it drops
+                    # the owner's move rather than carry it over to wait for a later undo.
+                    db.execute("DELETE FROM override WHERE card_id = ?", (old["id"],))
+                    detail += (
+                        f"; its source also moved it {ov['col_derived_when_set']} → {best.column},"
+                        f" so your move to {ov['col']} no longer applies"
+                    )
+                    report.followed_source += 1
                 for table in ("override", "sub_override"):
                     db.execute(
                         f"UPDATE OR IGNORE {table} SET card_id = ? WHERE card_id = ?",  # noqa: S608
                         (best.id, old["id"]),
                     )
                 db.execute("UPDATE event SET card_id = ? WHERE card_id = ?", (best.id, old["id"]))
-                self._event(now, "sync", best.id, "renamed", f"was {old['title'][:120]!r}")
+                self._event(now, "sync", best.id, "renamed", detail)
                 db.execute("DELETE FROM card WHERE id = ?", (old["id"],))
                 report.renamed += 1
             else:

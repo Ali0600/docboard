@@ -375,6 +375,8 @@ def create_app(cfg: Config, db_path: Path = DEFAULT_DB, port: int = 8742) -> Fas
             project = board.project(row["project"] if row is not None else manual["project"])
             children = [_card_view(c, t) for i in card["children"] if (c := store.card(i))]
             source = json.loads(row["source"]) if row is not None else {}
+            if source.get("plan_file") and not _inside(source["plan_file"], cfg.plans_dir):
+                source["plan_file"] = None  # only a file in the plans folder is named
             extra = {
                 "column_derived": row["column_derived"] if row is not None else "",
                 "decided": json.loads(row["decided"]) if row is not None else [],
@@ -463,6 +465,13 @@ class _ManualRow:
 def _count(value: str) -> int | None:
     """A count from a query parameter, or None for anything that is not one."""
     return int(value) if value.isdigit() and len(value) < 7 else None
+
+
+def _inside(path: str, folder: Path) -> bool:
+    try:
+        return Path(path).resolve().is_relative_to(folder.resolve())
+    except (OSError, ValueError):
+        return False
 
 
 def _in_sub(card: dict, sub: str) -> bool:

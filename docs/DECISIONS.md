@@ -25,6 +25,32 @@
   `uv tool install` with absolute paths, `PATH`, `HOME` and `LANG` set, proved under `env -i`,
   nothing under `~/Documents`.
 
+## 2026-10-28 — Cards in the right place: checklists, wrapped titles, a PR's own files
+
+- **The owner's checklists are read like ROADMAP items** (`docs/checklists/*.md`, a game's too,
+  each `- [ ]` step a card under the file's title): *chosen* by the owner, with roblox-games' launch
+  steps rewritten as `- [ ] **1. …**` so their numbers still read.
+  - **Leave them as numbered lists:** *rejected*: the launch steps then reach the board only as
+    asks sessions raise again in their own words.
+- **A PR's files come from the oldest commit citing it**, the squash; a later Milestones commit
+  ending in `(#N)` had supplied the files for #321 and #322. **A PR whose files span three or more
+  games is the project's own:** *chosen*.
+  - **The 60% file vote alone:** *rejected*: read correctly, #322 (moving every game's
+    screenshots) would have gone to Yeet a Fridge, which held 616 of its 786 files.
+- **An agent's own branch prefix (`codex/`, `claude/`) is looked past** when nothing matches:
+  *chosen*, which put four Yeet a Fridge PRs on their game.
+- **Two bullets with one title:** the owner's move follows the one whose text also matches.
+  **A reworded item whose source also moved it** drops the owner's move, as any source move does.
+- **The collapse floor also guards `roadmap` and `decision_files`:** *chosen*.
+  - **Also `questions` and `wrap_asks`:** *rejected*: they shrink as old transcripts are
+    deleted, which `transcript_files` already watches.
+- *Rejected* from the survey: an evidence line from a later similar question (little gain), and
+  skipping one-prompt sessions as probes (23 of 53 real sessions have one prompt; key on the
+  record's `entrypoint` if probes ever need excluding).
+
+Revisit hook: `docsrc.parse_backlog` and `parse_checklist`, `gitrepo.squash_files`,
+`attribution.by_branch` and `spread`, `store._renames`.
+
 ## 2026-10-28 — A sync the board can trust, and an undo before triage
 
 The survey after the rollout found the board could go stale without a word: with gh down every
