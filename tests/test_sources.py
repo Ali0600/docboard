@@ -725,4 +725,5 @@ def test_no_run_link_without_a_github_repo(tmp_path: Path) -> None:
 
 
 def test_a_tab_keeps_the_literal_form() -> None:
-    assert cli.stanza(Path("/srv/tab\there")) == "[[project]]\npath = '/srv/tab\there'"
+    path = Path("/srv/tab\there")  # spelled with the OS's own separator
+    assert cli.stanza(path) == f"[[project]]\npath = '{path}'"
