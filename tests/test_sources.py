@@ -339,7 +339,11 @@ if what == "pr list":
     print(json.dumps(keep(d["prs"])))
 elif what == "run list":
     branch = args[args.index("--branch") + 1]
-    print(json.dumps(keep([r for r in d["runs"] if r.get("headBranch", branch) == branch])))
+    event = args[args.index("--event") + 1] if "--event" in args else None
+    limit = int(args[args.index("--limit") + 1]) if "--limit" in args else 20
+    rows = [r for r in d["runs"] if r.get("headBranch", branch) == branch
+            and event in (None, r.get("event"))]
+    print(json.dumps(keep(rows[:limit])))
 elif what == "run view":
     print(json.dumps({{"jobs": d["jobs"].get(args[2], [])}}))
 elif what == "repo view":
@@ -452,11 +456,19 @@ def test_a_gh_that_does_not_answer_is_asked_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cfg, project = ms_project(tmp_path)
-    monkeypatch.setattr(ghsrc, "TIMEOUT", 0.5)
-    gh, log = gh_fake(tmp_path, prs=[gh_pr(7)], hang=("pr list",))
-    res = sync.collect(cfg, project, NOW, gh=str(gh))
+    asked: list[list[str]] = []
+    real = subprocess.run
+
+    def hung(cmd: list[str], **kw: object) -> object:
+        if cmd[0] != "fake-gh":
+            return real(cmd, **kw)  # git
+        asked.append(cmd[1:3])  # what a hung gh does, without timing a real process
+        raise subprocess.TimeoutExpired(cmd, ghsrc.TIMEOUT)
+
+    monkeypatch.setattr(subprocess, "run", hung)
+    res = sync.collect(cfg, project, NOW, gh="fake-gh")
     assert sync.gh_degraded(res.degraded) and sync.ci_degraded(res.degraded)
-    assert [c[:2] for c in calls(log)] == [["pr", "list"]]
+    assert asked == [["pr", "list"]]
 
 
 def test_no_gh_freezes_the_ci_cards_too(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -542,3 +554,173 @@ def test_the_stanza_names_the_main_checkout_from_a_worktree(
     )
     stanza = capsys.readouterr().out.split("  as:\n", 1)[1]
     assert tomllib.loads(stanza) == {"project": [{"path": str(repo.resolve())}]}
+
+
+# --- PR F, after the fix's own verification ---------------------------------------------------
+
+
+def test_do_it_here_matches_the_title_as_the_app_writes_it(tmp_path: Path) -> None:
+    long = "Rebuild the board " + "x" * 240  # the transcript keeps 200 characters of it
+    recs = [
+        *proposal("u1", "t1", "2026-10-25T10:00:00Z", 'Fix the "Hand check" parser', "task_aa11"),
+        *proposal("u2", "t2", "2026-10-25T10:01:00Z", "Keep the ‘sky’ lit", "task_bb22"),
+        *proposal("u3", "t3", "2026-10-25T10:02:00Z", long, "task_cc33"),
+        *proposal("u4", "t4", "2026-10-25T10:03:00Z", "Still waiting", "task_dd44"),
+        # the app maps every quotation mark to ' and cuts a title at 200 characters with an ellipsis
+        f.human(S, "h1", "2026-10-25T11:00:00Z",
+                "Do this task here: “Fix the 'Hand check' parser”"),
+        f.human(S, "h2", "2026-10-25T11:01:00Z", "Do this task here: “Keep the 'sky' lit”"),
+        f.human(S, "h3", "2026-10-25T11:02:00Z",
+                "Do this task here: “" + long[:200] + "…”\n\nand then more"),
+    ]  # fmt: skip
+    assert ideas(derived(tmp_path, recs)) == ["ss:t4"]
+
+
+def test_a_refused_start_by_id_leaves_the_proposal_standing(tmp_path: Path) -> None:
+    start = f.tool_use(S, "u9", "2026-10-26T09:00:00Z", "mcp__ccd_session__start_session",
+                       "t9", {"proposal_id": "task_aa11"})  # fmt: skip
+    refused = f.tool_result(S, "r9", "2026-10-26T09:00:01Z", "t9",
+                            "The user doesn't want to proceed with this tool use.")  # fmt: skip
+    recs = [*proposal("u1", "t1", "2026-10-25T10:00:00Z", "Trace the flake", "task_aa11"),
+            start, refused]  # fmt: skip
+    assert ideas(derived(tmp_path, recs)) == ["ss:t1"]
+
+
+def test_a_proposal_exactly_a_week_old_still_stands(tmp_path: Path) -> None:
+    recs = proposal("u1", "t1", "2026-10-20T12:00:00Z", "Old", "task_aa11")
+    assert ideas(derived(tmp_path, recs)) == ["ss:t1"]
+
+
+def test_a_proposals_lead_is_its_whole_first_paragraph(tmp_path: Path) -> None:
+    prompt = "Speed up the specs\nof the Alpha Game.\n\nLater: nothing."
+    args = {"initiation": "own_initiative", "title": "Speed up the specs",
+            "context": "fresh", "prompt": prompt}  # fmt: skip
+    recs = [
+        f.tool_use(S, "u1", "2026-10-25T10:00:00Z", "mcp__ccd_session__start_session", "t1", args),
+        f.tool_result(S, "r1", "2026-10-25T10:00:00Z", "t1",
+                      'Proposed "Speed up the specs" (task_id: task_aa11).'),
+    ]  # fmt: skip
+    assert derived(tmp_path, recs)["ss:t1"].sub == "alpha"
+
+
+def test_a_hand_check_follows_commonmark_fences() -> None:
+    inline = "## Summary\n```lune run test``` is green.\n\n## Hand check\n\n- Walk to the shed.\n"
+    assert D.hand_check(inline) == "- Walk to the shed."
+    tilde = "## Hand check\n\n~~~bash\n# open the place\n~~~\n\n- Walk to the shed.\n\n## Tests\n"
+    assert "Walk to the shed." in D.hand_check(tilde)
+    indented = (
+        "## Hand check\n\n1. Run:\n   ```bash\n# open the place\n   ```\n2. Walk to the shed.\n"
+    )
+    assert "Walk to the shed." in D.hand_check(indented)
+    tight = "## Hand check\n\n```bash\ncd x\n```\n## Tests\n\n- all green\n"
+    section = D.hand_check(tight)
+    assert "cd x" in section and "all green" not in section
+    nested = ("## Hand check\n\n````md\n```\n# not a heading\n```\n````\n\n- step\n\n"
+              "```\n~~~\n# still code\n```\n\n- last\n\n## Tests\n- no\n")  # fmt: skip
+    section = D.hand_check(nested)
+    assert "- step" in section and "- last" in section and "- no" not in section
+
+
+def test_red_since_dates_the_streak_s_first_red_run(tmp_path: Path) -> None:
+    runs = [run(3, "2026-10-27T09:00:00Z", "failure"), run(2, "2026-10-25T10:00:00Z", "timed_out"),
+            run(1, "2026-10-24T10:00:00Z", "success")]  # fmt: skip
+    card = derived(tmp_path, runs=runs)["ci:acme/demo#ci"]
+    assert card.column == D.IN_PROGRESS and "red since 2026-10-25" in card.badges
+
+
+def test_runs_of_one_second_are_ordered_by_id(tmp_path: Path) -> None:
+    same = "2026-10-26T12:00:00Z"
+    runs = [
+        run(5, same, "failure"),
+        run(6, same, "success"),
+        run(1, "2026-10-25T10:00:00Z", "failure"),
+    ]
+    assert derived(tmp_path, runs=runs)["ci:acme/demo#ci"].column == D.DONE
+
+
+def test_newest_red_looks_past_runs_still_going_and_skips_a_green_newest() -> None:
+    def r(n: int, wf: str, status: str, conclusion: str, ts: str) -> Run:
+        return Run("acme/demo", n, wf, status, conclusion, ts, f"u{n}", "push")
+
+    runs = [r(33, "ci", "in_progress", "", "2026-10-27T10:00:00Z"),
+            r(31, "ci", "completed", "failure", "2026-10-26T10:00:00Z"),
+            r(40, "docs", "completed", "success", "2026-10-27T10:00:00Z"),
+            r(39, "docs", "completed", "failure", "2026-10-26T10:00:00Z")]  # fmt: skip
+    assert [x.id for x in sync._newest_red(runs)] == [31]
+
+
+def test_fork_runs_cannot_crowd_main_out_of_the_window(tmp_path: Path) -> None:
+    cfg, project = ms_project(tmp_path)
+    at = "2026-10-27T{:02d}:{:02d}:00Z"
+    forks = [
+        gh_run(100 + i, at.format(i // 60, i % 60), "success", "pull_request") for i in range(60)
+    ]  # a stranger's PR from their own main, pushed 60 times
+    rows = [*forks, gh_run(31, "2026-10-26T12:00:00Z", "failure"),
+            gh_run(30, "2026-10-25T12:00:00Z", "success")]  # fmt: skip
+    gh, _ = gh_fake(tmp_path, prs=[gh_pr(7)], runs=rows, jobs={"31": []})
+    res = sync.collect(cfg, project, NOW, gh=str(gh))
+    assert {c.id: c.column for c in res.cards}.get("ci:acme/demo#ci") == D.IN_PROGRESS
+
+
+def test_the_default_branch_is_asked_again_after_an_hour(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [1000.0]
+    monkeypatch.setattr(ghsrc, "_clock", lambda: clock[0])
+    gh, log = gh_fake(tmp_path, branch="main")
+    assert ghsrc.default_branch("acme/demo", str(gh)) == "main"
+    data = tmp_path / "gh-data.json"
+    data.write_text(data.read_text().replace('"branch": "main"', '"branch": "trunk"'))
+    assert ghsrc.default_branch("acme/demo", str(gh)) == "main"  # asked once within the hour
+    assert [c[:2] for c in calls(log)] == [["repo", "view"]]
+    clock[0] += ghsrc.BRANCH_TTL + 1
+    assert ghsrc.default_branch("acme/demo", str(gh)) == "trunk"
+
+
+def test_no_default_branch_name_is_an_error(tmp_path: Path) -> None:
+    gh, _ = gh_fake(tmp_path, branch="")
+    with pytest.raises(ghsrc.GhError, match="default branch"):
+        ghsrc.default_branch("acme/demo", str(gh))
+
+
+def test_a_pr_list_error_still_reads_main_ci(tmp_path: Path) -> None:
+    cfg, project = ms_project(tmp_path)
+    rows = [
+        gh_run(31, "2026-10-26T12:00:00Z", "failure"),
+        gh_run(30, "2026-10-25T12:00:00Z", "success"),
+    ]
+    gh, _ = gh_fake(tmp_path, runs=rows, jobs={"31": []}, fail=("pr list",))
+    res = sync.collect(cfg, project, NOW, gh=str(gh))
+    assert sync.gh_degraded(res.degraded) and not sync.ci_degraded(res.degraded)
+    assert "ci:acme/demo#ci" in {c.id for c in res.cards}
+
+
+def test_a_gh_that_cannot_run_degrades_both_sources(tmp_path: Path) -> None:
+    cfg, project = ms_project(tmp_path)
+    gh = tmp_path / "gh"
+    gh.write_text("not a program\n")  # there, but not something the OS can run
+    res = sync.collect(cfg, project, NOW, gh=str(gh))
+    assert sync.gh_degraded(res.degraded) and sync.ci_degraded(res.degraded)
+
+
+def test_a_range_whose_first_end_is_no_pr_is_not_filled_in() -> None:
+    refs = docsrc.milestone_refs("- e: (#149-#152).\n", set(range(150, 171)))
+    assert sorted(refs) == [152]
+
+
+def test_a_hash_inside_a_word_or_a_url_is_no_pr() -> None:
+    refs = docsrc.milestone_refs(
+        "- x: see https://h.example/y#74 and abc#75; ok (#76).\n", {74, 75, 76}
+    )
+    assert sorted(refs) == [76]
+
+
+def test_no_run_link_without_a_github_repo(tmp_path: Path) -> None:
+    from docboard import web
+
+    links = web._source_links(Project(name="d", path=tmp_path), None, {"run_id": 7})
+    assert "run" not in links
+
+
+def test_a_tab_keeps_the_literal_form() -> None:
+    assert cli.stanza(Path("/srv/tab\there")) == "[[project]]\npath = '/srv/tab\there'"

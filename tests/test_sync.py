@@ -420,6 +420,14 @@ def test_every_transcript_card_is_on_exactly_one_board(tmp_path: Path) -> None:
                     "prompt": "x", "context": "fresh"}),
         f.tool_result("s1", "ss2", "2026-10-26T09:40:00Z", "st1",
                       'Proposed "Speed up the tool\'s tests" (task_id: task_ab12).'),
+        # a path deep in a prompt is no claim on a board: this one stays where it was filed
+        f.human("s1", "h2", "2026-10-26T09:40:30Z", "and the specs"),
+        f.tool_use("s1", "ss3", "2026-10-26T09:41:00Z", "mcp__ccd_session__start_session", "st2",
+                   {"initiation": "own_initiative", "title": "Speed up the slow specs",
+                    "prompt": "Speed up the slow specs.\n\nLater: the tool repo has the same.",
+                    "context": "fresh"}),
+        f.tool_result("s1", "ss4", "2026-10-26T09:41:00Z", "st2",
+                      'Proposed "Speed up the slow specs" (task_id: task_cd34).'),
     ]  # fmt: skip
     f.write(
         tmp_path / "claude" / "projects" / encode_path(one) / "s1.jsonl",
@@ -434,7 +442,7 @@ def test_every_transcript_card_is_on_exactly_one_board(tmp_path: Path) -> None:
     kinds = ("needs", "question", "wrap", "plan", "proposal")
     ids_a = {c.id for c in a.cards if c.kind in kinds}
     ids_b = {c.id for c in b.cards if c.kind in kinds}
-    assert ids_a == {"ny:a0:1", "pl:p1"} and ids_b == {"ny:a1:1", "ss:st1"}
+    assert ids_a == {"ny:a0:1", "pl:p1", "ss:st2"} and ids_b == {"ny:a1:1", "ss:st1"}
     assert (a.counts["needs_items_here"], b.counts["needs_items_here"]) == (1, 1)
     assert (a.counts["plan_calls_here"], b.counts["plan_calls_here"]) == (1, 0)
     # The floors count what the parser finds in every board's transcripts, so a card moving
