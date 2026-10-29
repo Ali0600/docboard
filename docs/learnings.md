@@ -2,6 +2,19 @@
 
 Teachable things that came up building docboard. Newest first.
 
+### `gh run list --branch main` also lists runs that never tested main
+
+GitHub's branch filter matches a run's head branch. A pull request from someone's fork whose own
+branch is named `main` is listed under `main`, and so are Dependabot's update jobs (event
+`dynamic`). On a public repo a stranger's PR could have turned a red-main card green, or made
+one up.
+
+**Why it came up:** Dependabot's first runs appeared in docboard's own `main` list the day
+the CI cards were built, and the review showed a fork's PR from its `main` would land there too.
+
+**Takeaway:** read a branch's health only from runs of its own commits: ask for the `event` field
+and keep `push`, `schedule` and the dispatches.
+
 ### `git log -p` hides what a merge adds, and a new branch has no range
 
 The pre-push scan read each pushed commit's patch. A merge prints no patch by default, so a line

@@ -42,15 +42,26 @@
   approved with the plan). 34 PRs of the games repo name a hand check in a heading.
   - **Each hand check its own Needs-you card:** *rejected*: 34 more asks, all on merged PRs, with
     nothing to say whether a check was ever made; sessions already raise the ones that matter.
-- **MILESTONES lines join the PR cards they cite** (`#N`, ranges whose ends are both PRs; never
-  "game #1"): no new card and no id change; 122 of the games repo's PRs carry one.
-- **A session proposed on the assistant's own initiative is an Idea until its task is dismissed:**
-  *chosen*. A proposal the owner started cannot be told from the transcript, so it stays until
-  dismissed here or on the board.
+- **MILESTONES lines join the PR cards they cite** (`#N` after a bracket, comma or a word like
+  "PR", "and", "the"; ranges whose ends are both PRs, at most 50 apart, else each known end): no
+  new card and no id change; 121 of the games repo's PRs carry one.
+  - **Every `#N` that is a known PR number:** *rejected* after review: in a repo where every
+    number up to 324 is a PR, "visual review #24" put a line on PR #24.
+- **A session proposed on the assistant's own initiative is an Idea while the proposal stands:**
+  *chosen*. It leaves once its task is dismissed, started (a later `start_session` naming its
+  `proposal_id`, or the owner's "Do it here", which the app sends as `Do this task here:
+  "<title>"` in the same session) or a week old, when the app drops it. A call that proposed
+  nothing (no task id came back) is no card. Its game and board come from its title and the
+  prompt's first paragraph only. On live data: 2 of 8 proposals still stand.
 - **Main's CI: a card per workflow while its newest run on the default branch is red, Done once a
-  later run is green**; a red run whose failed jobs have no steps says it was refused before it
-  ran (the October Actions-budget outage: 40 of 43 red runs), so it is not read as a failing
-  build. Its outage is its own source ("ci: …"): it freezes the CI cards, never the PR cards.
+  later run is green** (dated when it turned green); a red run whose failed jobs have no steps
+  says it was refused before it ran (the October Actions-budget outage: 40 of 43 red runs), so it
+  is not read as a failing build. Only runs testing the branch's own commits count (push,
+  schedule, dispatch): `gh run list --branch main` also lists a fork's pull request from its own
+  `main` and Dependabot's update jobs. Only a success is green. The branch is the one gh names as
+  default. Its outage is its own source ("ci: …"): it freezes the CI cards, never the PR cards,
+  and a PR-list failure never freezes the CI cards; a gh that does not answer is asked once.
+  - **`--event push`:** *rejected*: it would drop scheduled and dispatched runs.
   - **A Needs-you card:** *rejected*: Needs you never leaves by derivation, and a red main clears
     itself.
 - **`docboard board` in a folder no board reads prints a `[[project]]` stanza** with the folder's
