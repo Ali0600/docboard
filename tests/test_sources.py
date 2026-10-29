@@ -83,6 +83,12 @@ def test_a_pr_card_carries_its_milestone_lines_and_its_hand_check(tmp_path: Path
     assert plain.body == "" and "hand check listed" not in plain.badges
 
 
+def test_a_hand_check_heading_may_say_it_in_other_words() -> None:
+    body = "## Feel numbers for the owner's hand check\n\n- jump height 7\n\n## Done\n"
+    assert D.hand_check(body) == "- jump height 7"
+    assert D.hand_check("## Checks\n\nhand check in prose only\n") == ""
+
+
 def proposal(uid: str, tid: str, ts: str, title: str, task: str) -> list[dict]:
     args = {"initiation": "own_initiative", "title": title, "prompt": f"Do {title}.",
             "context": "fresh"}  # fmt: skip
@@ -118,8 +124,8 @@ def test_session_proposals_are_ideas_until_dismissed(tmp_path: Path) -> None:
 
 
 def run(n: int, ts: str, conclusion: str, workflow: str = "ci") -> Run:
-    return Run(repo="acme/demo", id=n, workflow=workflow, status="completed",
-               conclusion=conclusion, created_at=ts, url=f"https://github.com/acme/demo/run/{n}")  # fmt: skip
+    url = f"https://github.com/acme/demo/run/{n}"
+    return Run("acme/demo", n, workflow, "completed", conclusion, ts, url)
 
 
 def test_a_red_main_is_a_card_until_it_is_green_again(tmp_path: Path) -> None:

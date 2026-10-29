@@ -197,6 +197,9 @@ def _board(args: argparse.Namespace) -> int:
         names = ", ".join(p.name for p in cfg.projects)
         where, _ = paths.config_path(args.config)
         print(f"board: {cwd} is in none of the configured projects ({names}); add it to {where}")
+        top = locate.git_top(cwd)
+        if top is not None:  # the folder's own repo, nothing read from its tree
+            print(f'  as:\n[[project]]\npath = "{top}"')
         return 2
     project, sub = found.project, found.sub
     status = 0

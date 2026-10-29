@@ -77,6 +77,17 @@ def _subprojects(
     return Attributor.build(sp.parent, slugs, names, sp.aliases, sp.branches), names
 
 
+def _newest_red(runs: list[ghsrc.Run]) -> list[ghsrc.Run]:
+    """Each workflow's newest finished run, when it is red (the one its card describes)."""
+    newest: dict[str, ghsrc.Run] = {}
+    for run in runs:
+        if run.status != "completed" or run.conclusion in ("cancelled", "skipped", ""):
+            continue
+        if run.workflow not in newest or run.created_at > newest[run.workflow].created_at:
+            newest[run.workflow] = run
+    return [r for r in newest.values() if r.conclusion in ghsrc.RED]
+
+
 def router(cfg: Config) -> Router:
     """Every configured project with its GitHub repo and its games' names, for routing session
     items to boards."""
@@ -140,6 +151,8 @@ def collect(cfg: Config, project: Project, now: datetime, gh: str | None = None)
 
     t1 = time.monotonic()
     prs: list[ghsrc.PullRequest] = []
+    runs: list[ghsrc.Run] = []
+    refused: dict[int, bool] = {}
     if github:
         gh = gh or ghsrc.find_gh()
         if gh is None:
@@ -149,7 +162,24 @@ def collect(cfg: Config, project: Project, now: datetime, gh: str | None = None)
                 prs = ghsrc.fetch(github, gh)
             except (ghsrc.GhError, OSError) as e:
                 degraded.append(f"gh: {e}")
+            try:  # main's CI: its own source, so a failure here never freezes the PR cards
+                branch = (repo.ref or "main").removeprefix("origin/")
+                runs = ghsrc.fetch_runs(github, gh, branch)
+                for run in _newest_red(runs):
+                    refused[run.id] = ghsrc.refused_before_running(github, gh, run.id)
+            except (ghsrc.GhError, OSError) as e:
+                runs, refused = [], {}
+                degraded.append(f"ci: {e}")
     squash = repo.squash_files()
+    milestones: dict[int, list[str]] = {}
+    known = {p.number for p in prs}
+    for path in [
+        "docs/MILESTONES.md",
+        *(f"{att.parent}/{s}/docs/MILESTONES.md" for s in att.slugs),
+    ]:
+        text = repo.read(path) if known else None
+        for n, lines in docsrc.milestone_refs(text or "", known).items():
+            milestones.setdefault(n, []).extend(lines)
     timings["github"] = time.monotonic() - t1
 
     t2 = time.monotonic()
@@ -175,6 +205,9 @@ def collect(cfg: Config, project: Project, now: datetime, gh: str | None = None)
             now=now,
             ref_sha=repo.ref_sha,
             router=routing,
+            milestones=milestones,
+            runs=runs,
+            refused_runs=refused,
         ),
         counts=routed,
         extras=extras,
@@ -191,6 +224,8 @@ def collect(cfg: Config, project: Project, now: datetime, gh: str | None = None)
         "prs_merged": states["merged"],
         "prs_open": states["open"],
         "prs_closed": states["closed"],
+        "ci_runs": len(runs),
+        "milestone_prs": len(milestones),
         # Files filed under this project (its own folders), so the floors mean what they did:
         "transcript_files": scan.files_by[project.name],
         "transcript_bytes": scan.bytes_by[project.name],
@@ -216,6 +251,7 @@ def collect(cfg: Config, project: Project, now: datetime, gh: str | None = None)
         "questions_waiting": sum(1 for c in cards if c.kind == "question"),
         "wrap_asks": routed.get("wrap_asks", 0),
         "routed_here": sum(1 for c in cards if c.source.get("routed")),
+        "proposals": sum(1 for c in cards if c.kind == "proposal"),
     }
     if counts["transcript_parse_errors"]:
         warnings.append(f"{counts['transcript_parse_errors']} transcript lines were not JSON")
@@ -261,7 +297,12 @@ GH_FLOOR_KEYS = ("prs_merged",)
 
 
 def gh_degraded(degraded: list[str]) -> bool:
+    """gh could not list the PRs (main's CI runs are a separate source: "ci: …")."""
     return any(d.startswith("gh") for d in degraded)
+
+
+def ci_degraded(degraded: list[str]) -> bool:
+    return any(d.startswith("ci:") for d in degraded)
 
 
 def floor_drops(

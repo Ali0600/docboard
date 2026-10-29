@@ -16,7 +16,7 @@ from functools import cache
 from docboard import ids
 from docboard.attribution import Attributor
 from docboard.docsrc import Bullet, RoadmapItem
-from docboard.ghsrc import PullRequest
+from docboard.ghsrc import RED, PullRequest, Run
 from docboard.route import Router
 from docboard.textsim import jaccard, similar
 from docboard.transcripts import PlanCall, Scan, Touch
@@ -41,7 +41,13 @@ _FIRST_PAREN = re.compile(r"^\s*\(([^)]*)\)")
 # holds a PR, such a PR and every later one belong to some later plan, not this one.
 _SERIES = re.compile(r"\bPR ?(?:0|1|A)\b")
 _NEVER = datetime.max.replace(tzinfo=UTC)
-TRANSCRIPT_KINDS = ("needs", "question", "wrap", "plan")
+TRANSCRIPT_KINDS = ("needs", "question", "wrap", "plan", "proposal")
+# Any heading that names a hand check: "## Hand check", "## For your hand check",
+# "## Feel numbers for the owner's hand check" (34 such headings in one repo's PRs).
+_HAND_CHECK = re.compile(
+    r"^(#{1,6})\s[^\n]*\bhand[- ]?checks?\b[^\n]*$", re.IGNORECASE | re.MULTILINE
+)
+_ANY_HEADING = re.compile(r"^(#{1,6})\s", re.MULTILINE)
 
 
 @dataclass
@@ -89,6 +95,23 @@ class Inputs:
     # Every configured project, when the scan covers them all: each transcript card then goes to
     # one board only. None: a single project's scan, every card is this project's.
     router: Router | None = None
+    milestones: dict[int, list[str]] = field(default_factory=dict)  # PR -> MILESTONES lines
+    runs: Sequence[Run] = ()  # the default branch's newest workflow runs, newest first
+    refused_runs: dict[int, bool] = field(default_factory=dict)  # red run id -> never ran
+
+
+def hand_check(body: str) -> str:
+    """A PR description's "Hand check" section (to the next heading of its level or above)."""
+    m = _HAND_CHECK.search(body or "")
+    if m is None:
+        return ""
+    level = len(m.group(1))
+    end = len(body)
+    for h in _ANY_HEADING.finditer(body, m.end()):
+        if len(h.group(1)) <= level:
+            end = h.start()
+            break
+    return body[m.end() : end].strip()[:BODY_CAP]
 
 
 @cache
@@ -515,6 +538,10 @@ class _Deriver:
                     sub, reason = self.att.by_files(files, min_hits=1), "files"
             if not sub and reason != "repo-wide":
                 sub, reason = "", "root"
+            parts = [f"Milestones: {line}" for line in self.inp.milestones.get(pr.number, ())]
+            check = hand_check(pr.body)
+            if check:
+                parts.append("Hand check:\n" + check)
             card = Card(
                 id=cid,
                 kind="pr",
@@ -522,8 +549,10 @@ class _Deriver:
                 title=pr.title,
                 sub=sub,
                 sub_reason=reason,
+                body="\n\n".join(parts)[:BODY_CAP],
                 event_at=pr.merged_at or pr.closed_at or pr.created_at,
-                badges=["closed"] if pr.state == "closed" else [],
+                badges=(["closed"] if pr.state == "closed" else [])
+                + (["hand check listed"] if check else []),
                 source={
                     "url": pr.url,
                     "number": pr.number,
@@ -816,6 +845,77 @@ class _Deriver:
             self.tally[(self.owner[card.id][0], "wrap_asks")] += 1
             self.cards.append(card)
 
+    def proposals(self) -> None:
+        """Sessions the assistant proposed on its own, as Ideas until their task is dismissed."""
+        scan = self.inp.scan
+        for prop in scan.proposals.values():
+            task = scan.proposal_tasks.get(prop.id)
+            if task is not None and task in scan.dismissed:
+                continue
+            at = _t(prop.ts)
+            sub, reason = self._transcript_sub(prop.session, at, prop.title, prop.prompt)
+            card = Card(
+                id=ids.proposal_id(prop.id),
+                kind="proposal",
+                column=IDEAS,
+                title=prop.title,
+                sub=sub,
+                sub_reason=reason,
+                body=prop.prompt,
+                event_at=prop.ts,
+                badges=["proposed session"],
+                source={"session": prop.session, "task": task or ""},
+            )
+            self._own(
+                card, self._ask_owner(prop.session, at, prop.title, prop.prompt), prop.session
+            )
+            self.cards.append(card)
+
+    def ci(self) -> None:
+        """Each workflow whose newest run on the default branch is red is a card in In progress;
+        once a later run is green it moves to Done. A workflow never red here has no card."""
+        by_workflow: dict[str, list[Run]] = defaultdict(list)
+        for run in self.inp.runs:
+            if run.status == "completed" and run.conclusion not in ("cancelled", "skipped", ""):
+                by_workflow[run.workflow].append(run)
+        for workflow, runs in sorted(by_workflow.items()):
+            runs.sort(key=lambda r: (_t(r.created_at), r.id), reverse=True)
+            if not any(r.conclusion in RED for r in runs):
+                continue
+            newest = runs[0]
+            repo = newest.repo
+            if newest.conclusion in RED:
+                streak = []
+                for r in runs:
+                    if r.conclusion not in RED:
+                        break
+                    streak.append(r)
+                refused = self.inp.refused_runs.get(newest.id, False)
+                badges = [f"red since {streak[-1].created_at[:10]}", f"{len(streak)} red runs"]
+                if refused:
+                    badges.append("refused before it ran (an Actions budget?), not a failing build")
+                column, event_at, title = (
+                    IN_PROGRESS,
+                    streak[-1].created_at,
+                    f"main is red: {workflow}",
+                )
+            else:
+                badges, column = ["green again"], DONE
+                event_at, title = newest.created_at, f"main is green again: {workflow}"
+            self.cards.append(
+                Card(
+                    id=ids.ci_id(repo, workflow),
+                    kind="ci",
+                    column=column,
+                    title=title,
+                    sub="",
+                    sub_reason="root",
+                    event_at=event_at,
+                    badges=badges,
+                    source={"run_url": newest.url, "run_id": newest.id, "workflow": workflow},
+                )
+            )
+
     def headings(self) -> None:
         for _uuid, session in self.inp.scan.empty_needs.items():
             self.tally[(self._folder(session), "needs_headings_without_items")] += 1
@@ -836,6 +936,8 @@ def derive(
     d.needs()
     d.questions()
     d.wraps()
+    d.proposals()
+    d.ci()
     d.headings()
     cards = [c for c in d.cards if c.kind not in TRANSCRIPT_KINDS or d.mine(c.id)]
     handover = {cid: owner[0] for cid, owner in d.owner.items() if owner[0] != inp.project}

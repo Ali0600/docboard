@@ -159,3 +159,45 @@ def parse_roadmap(text: str, title_section: bool = False) -> list[RoadmapItem]:
             cur = None
     flush()
     return items
+
+
+_MS_BULLET = re.compile(r"^- ")
+# "#162", "#162-#167", "PR #74"; never "game #1" (a game's number in a table or prose).
+_MS_REF = re.compile(r"(?<![\w/])(?<!game )#(\d+)(?:\s*[-–]\s*#(\d+))?", re.IGNORECASE)
+
+
+def milestone_bullets(text: str) -> list[str]:
+    """The column-0 bullets of a MILESTONES.md, each joined with its continuation lines."""
+    out: list[str] = []
+    cur: list[str] | None = None
+    for line in text.splitlines():
+        if _MS_BULLET.match(line):
+            if cur is not None:
+                out.append(" ".join(cur))
+            cur = [line[2:].strip()]
+        elif cur is not None and line.startswith(" ") and line.strip():
+            cur.append(line.strip())
+        elif cur is not None:
+            out.append(" ".join(cur))
+            cur = None
+    if cur is not None:
+        out.append(" ".join(cur))
+    return out
+
+
+def milestone_refs(text: str, known: set[int]) -> dict[int, list[str]]:
+    """PR number -> the MILESTONES bullets citing it, for the numbers that are this repo's PRs. A
+    range counts only when both of its ends are known PRs."""
+    refs: dict[int, list[str]] = {}
+    for bullet in milestone_bullets(text):
+        cited: set[int] = set()
+        for m in _MS_REF.finditer(bullet):
+            a = int(m.group(1))
+            b = int(m.group(2)) if m.group(2) else None
+            if b is not None and a in known and b in known and a < b <= a + 50:
+                cited.update(n for n in range(a, b + 1) if n in known)
+            elif a in known:
+                cited.add(a)
+        for n in sorted(cited):
+            refs.setdefault(n, []).append(bullet[:BODY_CAP])
+    return refs

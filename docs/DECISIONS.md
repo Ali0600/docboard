@@ -36,6 +36,29 @@
   `uv tool install` with absolute paths, `PATH`, `HOME` and `LANG` set, proved under `env -i`,
   nothing under `~/Documents`.
 
+## 2026-10-28 — Small sources: milestones and hand checks on PRs, proposals, main's CI
+
+- **A PR's hand check is a badge and a section on its card:** *chosen* (the default the owner
+  approved with the plan). 34 PRs of the games repo name a hand check in a heading.
+  - **Each hand check its own Needs-you card:** *rejected*: 34 more asks, all on merged PRs, with
+    nothing to say whether a check was ever made; sessions already raise the ones that matter.
+- **MILESTONES lines join the PR cards they cite** (`#N`, ranges whose ends are both PRs; never
+  "game #1"): no new card and no id change; 122 of the games repo's PRs carry one.
+- **A session proposed on the assistant's own initiative is an Idea until its task is dismissed:**
+  *chosen*. A proposal the owner started cannot be told from the transcript, so it stays until
+  dismissed here or on the board.
+- **Main's CI: a card per workflow while its newest run on the default branch is red, Done once a
+  later run is green**; a red run whose failed jobs have no steps says it was refused before it
+  ran (the October Actions-budget outage: 40 of 43 red runs), so it is not read as a failing
+  build. Its outage is its own source ("ci: …"): it freezes the CI cards, never the PR cards.
+  - **A Needs-you card:** *rejected*: Needs you never leaves by derivation, and a red main clears
+    itself.
+- **`docboard board` in a folder no board reads prints a `[[project]]` stanza** with the folder's
+  repo path only, reading nothing else there.
+
+Revisit hook: `docsrc.milestone_refs`, `derive.hand_check`, `derive.proposals` and `ci`,
+`ghsrc.fetch_runs` and `refused_before_running`.
+
 ## 2026-10-28 — The board runs anywhere: a data folder, Windows, a pre-push scan
 
 - **The database, config and private terms live in the user's data folder** (macOS

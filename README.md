@@ -84,13 +84,18 @@ has older code than the checkout, so it needs a restart.
 - **Pull requests** (`ghsrc.py`) through `gh`; a failure shows as "degraded", never as no PRs.
   A PR belongs to the game its title names, else its branch prefix (an agent's own `codex/` or
   `claude/` looked past), else most of the files of its squash commit; a PR touching three or more
-  games is the project's own ("repo-wide").
+  games is the project's own ("repo-wide"). A PR card carries the MILESTONES lines that cite it
+  and, when its description has one, its hand-check section (badged "hand check listed"). Main's
+  CI is a card while a workflow's newest run on the default branch is red ("refused before it
+  ran" when GitHub never started its jobs), and moves to Done once a later run is green.
 - **Transcripts** (`transcripts.py`) are every configured project's `~/.claude/projects/`
   folders, read in one pass (worktrees' included; folder names compared ignoring case), and a file
   that has not changed is not read again. Each line is checked with byte substrings before any
   JSON is parsed. Items come only from main-session assistant text and tool calls, never from tool
   results, which can hold a web page's text. A record copied into several files (forks,
   continued sessions) counts once, and every session holding a copy is known.
+- **Session proposals**: a session the assistant proposed on its own (`start_session`) is an Idea
+  until its task is dismissed.
 - **Which board** (`route.py`): a session filed under one project often works in another. An
   ask goes to the one project (or one of its games) its text names, else the project its turn's
   files are in, else the project its transcript is filed under; a plan goes where most of its PRs

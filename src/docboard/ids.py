@@ -68,3 +68,11 @@ def ask_id(tool_use_id: str) -> str:
 
 def wrap_id(tool_use_id: str) -> str:
     return f"wu:{tool_use_id}"
+
+
+def ci_id(repo: str, workflow: str) -> str:
+    return f"ci:{repo}#{workflow}"
+
+
+def proposal_id(tool_use_id: str) -> str:
+    return f"ss:{tool_use_id}"

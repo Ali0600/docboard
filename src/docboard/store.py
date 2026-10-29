@@ -19,7 +19,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from docboard.derive import COLUMNS, DONE, NEEDS_YOU, RECENT
-from docboard.sync import GH_FLOOR_KEYS, SyncResult, floor_drops, gh_degraded
+from docboard.sync import GH_FLOOR_KEYS, SyncResult, ci_degraded, floor_drops, gh_degraded
 from docboard.textsim import jaccard
 
 HIDDEN = "hidden"
@@ -366,7 +366,9 @@ class Store:
             problems = list(drops.values())
             self._run(result, now, "refused", "; ".join(problems))
             raise FloorError(problems)
-        frozen = {"pr", "plan"} if gh_down else set()
+        frozen = {"pr", "plan", "ci"} if gh_down else set()
+        if ci_degraded(result.degraded):
+            frozen.add("ci")  # the runs could not be read: keep the CI cards as they were
         report = ApplyReport(kept_frozen=sorted(frozen), accepted=list(accepted.values()))
         message = ("accepted drop: " + "; ".join(accepted.values())) if accepted else ""
         with self.tx():

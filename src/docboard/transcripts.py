@@ -80,7 +80,12 @@ _ASSISTANT_MARKERS = (
     b"AskUserQuestion",
     b"## Needs you",
     b"mcp__ccd_turn__wrap_up",
+    b"mcp__ccd_session__start_session",
+    b"mcp__ccd_session__dismiss_task",
 )
+START_SESSION = "mcp__ccd_session__start_session"
+DISMISS_TASK = "mcp__ccd_session__dismiss_task"
+_TASK_ID = re.compile(r"\(task_id: (task_[0-9a-f]{4,40})\)")
 # A large approval is saved to disk and its text is a "<persisted-output>" stub, but its
 # structured result still carries the plan (`toolUseResult.isAgent`).
 _RESULT_MARKERS = (
@@ -88,6 +93,7 @@ _RESULT_MARKERS = (
     b"doesn't want to proceed",
     b'"answers"',
     b'"isAgent"',
+    b"(task_id: task_",
 )
 
 
@@ -144,6 +150,17 @@ class WrapAsk:
     ask: str
     recap: str
     actions: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Proposal:
+    """A session the assistant proposed on its own (a card the owner may start)."""
+
+    id: str
+    session: str
+    ts: str
+    title: str
+    prompt: str
 
 
 @dataclass(frozen=True)
@@ -226,6 +243,9 @@ class FileResult:
     skipped_long: int
     starts: tuple[tuple[str, str], ...] = ()  # (session, its earliest record's timestamp here)
     born: float = 0.0  # when the file was created (its creation time where the OS keeps one)
+    proposals: tuple[Proposal, ...] = ()
+    proposal_tasks: tuple[tuple[str, str], ...] = ()  # (tool use id, the task id it got)
+    dismissed: tuple[str, ...] = ()  # task ids dismissed
 
 
 @dataclass
@@ -243,6 +263,9 @@ class Scan:
     questions: dict[str, Question] = field(default_factory=dict)
     needs: dict[tuple[str, int], NeedsItem] = field(default_factory=dict)
     wraps: dict[str, WrapAsk] = field(default_factory=dict)
+    proposals: dict[str, Proposal] = field(default_factory=dict)
+    proposal_tasks: dict[str, str] = field(default_factory=dict)  # tool use id -> task id
+    dismissed: set[str] = field(default_factory=set)  # task ids
     humans: dict[tuple[str, str], HumanTurn] = field(default_factory=dict)
     touches: dict[tuple[str, str], Touch] = field(default_factory=dict)
     titles: dict[str, str] = field(default_factory=dict)
@@ -410,6 +433,9 @@ class _FileScan:
         self.parse_errors = 0
         self.skipped_long = 0
         self.starts: dict[str, str] = {}
+        self.proposals: list[Proposal] = []
+        self.proposal_tasks: list[tuple[str, str]] = []
+        self.dismissed: list[str] = []
 
     def line(self, raw: bytes) -> None:
         if self.want_cwds:
@@ -527,6 +553,18 @@ class _FileScan:
                     actions,
                 )
             )
+        elif name == START_SESSION and args.get("initiation") == "own_initiative":
+            self.proposals.append(
+                Proposal(
+                    tid,
+                    session,
+                    ts,
+                    str(args.get("title") or "A session")[:200],
+                    str(args.get("prompt") or "")[:TEXT_CAP],
+                )  # fmt: skip
+            )
+        elif name == DISMISS_TASK and isinstance(args.get("task_id"), str):
+            self.dismissed.append(args["task_id"][:60])
         elif name in FILE_TOOLS:
             path = args.get("file_path") or args.get("notebook_path")
             found = self.roots.owner(path) if isinstance(path, str) else None
@@ -556,6 +594,9 @@ class _FileScan:
             elif isinstance(tur, dict) and isinstance(tur.get("answers"), dict):
                 pairs = tuple((str(q)[:500], _answer(a)) for q, a in tur["answers"].items())
                 self.results.append(ToolResult(tid, ts, "answered", answers=pairs))
+            elif text.startswith("Proposed ") and (m := _TASK_ID.search(text[:600])):
+                # Read only for its outcome, like a plan approval: which task the proposal became.
+                self.proposal_tasks.append((tid, m.group(1)))
 
     def human(self, raw: bytes) -> None:
         rec = self.load(raw)
@@ -600,6 +641,9 @@ class _FileScan:
             parse_errors=self.parse_errors,
             skipped_long=self.skipped_long,
             starts=tuple(sorted(self.starts.items())),
+            proposals=tuple(self.proposals),
+            proposal_tasks=tuple(self.proposal_tasks),
+            dismissed=tuple(self.dismissed),
         )
 
 
@@ -700,6 +744,10 @@ def _merge(scan: Scan, fr: FileResult, order: dict[str, tuple]) -> None:
         _keep(scan.pr_links, (link.session, link.repo, link.number), link)
     for sid, title in fr.titles:
         scan.titles[sid] = title
+    for prop in fr.proposals:
+        _keep(scan.proposals, prop.id, prop, starts)
+    scan.proposal_tasks.update(fr.proposal_tasks)
+    scan.dismissed.update(fr.dismissed)
 
 
 def scan_all(
