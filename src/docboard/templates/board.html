@@ -51,7 +51,7 @@
     <code>{{ accept_cmd }}</code></p>
   {% elif last %}
   {% if last.message %}<p class="muted">{{ last.message }}</p>{% endif %}
-  {% for d in degraded %}<p class="warn">Degraded: {{ d }}. PR and plan cards keep their last good state.</p>{% endfor %}
+  {% for d in degraded %}<p class="warn">Degraded: {{ d.text }}. {{ d.keeps }} keep their state{% if d.since %} from the sync of {{ d.since }} UTC{% else %}: no sync has read them yet{% endif %}.</p>{% endfor %}
   {% endif %}
   {% if warnings %}<details class="warnings"><summary>{{ warnings|length }} warning{{ "s" if warnings|length != 1 }} from the last sync</summary>
     <ul>{% for w in warnings %}<li>{{ w }}</li>{% endfor %}</ul></details>{% endif %}

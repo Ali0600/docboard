@@ -309,6 +309,27 @@ class Store:
             sql += " AND status = 'ok'"
         return self.db.execute(sql + " ORDER BY id DESC LIMIT 1", (project,)).fetchone()
 
+    def last_read(self, project: str, source: str) -> str | None:
+        """When a source ("gh" for PRs and plans, "ci" for main's CI) was last read: the newest
+        good sync it did not degrade, whose cards a degraded sync keeps. A sync from before CI
+        was a source (no `ci_runs` count) never read it."""
+        rows = self.db.execute(
+            "SELECT started, degraded, counts FROM sync_run WHERE project = ? AND status = 'ok'"
+            " ORDER BY id DESC",
+            (project,),
+        )  # read newest first until one matches, however many degraded syncs came since
+        for row in rows:
+            degraded = json.loads(row["degraded"])
+            if source == "gh" and not gh_degraded(degraded):
+                return str(row["started"])
+            if (
+                source == "ci"
+                and not ci_degraded(degraded)
+                and "ci_runs" in json.loads(row["counts"])
+            ):
+                return str(row["started"])
+        return None
+
     def _baseline(self, project: str) -> dict[str, int] | None:
         """The counts a sync is compared with: the last good run's, except the PR counts, which
         come from the last good run that gh answered (an outage's zero never becomes a

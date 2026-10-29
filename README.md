@@ -121,8 +121,9 @@ has older code than the checkout, so it needs a restart.
   when Claude Code deletes its transcript. A sync whose source collapsed (fell to zero, or by more
   than half, since the last good one) writes nothing and says so on the page, with the
   `--accept-drop` command for a drop that is real. With GitHub unreachable the rest still syncs,
-  while PR and plan cards keep their last good state. A sync that crashes is recorded as failed,
-  with its reason on the page, and one broken project never stops the others.
+  while PR and plan cards keep their last good state, and the banner says since when. A sync that
+  crashes is recorded as failed, with its reason on the page, and one broken project never stops
+  the others.
 - **The page** (`web.py`, FastAPI and Jinja2) answers only on the loopback address, and only to a
   loopback Host header (against DNS rebinding). Nothing changes except through a POST from the
   board's own page (Origin, or the browser's Sec-Fetch-Site), so an outside page can neither read
@@ -151,7 +152,7 @@ has older code than the checkout, so it needs a restart.
 - An idempotent sources-to-cards derivation with content-derived, versioned ids. A test moves a doc
   from the root into a sub-project and proves all of its cards keep their ids; a routing test
   proves every session card lands on exactly one of the configured boards.
-- Guards each proven by a test that failed first (about 250 tests added over six PRs, each PR's
+- Guards each proven by a test that failed first (about 280 tests added over seven PRs, each PR's
   red run in its description), among them the id rule, the collapse floor that writes nothing,
   a gh outage that freezes PRs instead of refusing the sync, and the page's Host and same-origin
   checks.

@@ -60,7 +60,7 @@
     {% if links.run %}<li><a href="{{ links.run }}" rel="noopener noreferrer">the newest run of {{ source.workflow }}</a></li>{% endif %}
     {% if source.session %}<li><a href="/s/{{ source.session|urlencode }}">session {{ source.session }}{% if source.session_title %}: {{ source.session_title }}{% endif %}</a></li>{% endif %}
     {% if source.plan %}<li>its plan, on the {{ source.plan_project }} board: <a href="/i/{{ source.plan|urlencode }}">{{ source.plan_title }}</a></li>{% endif %}
-    {% if source.other_prs %}<li>PRs in other repos: {{ source.other_prs|join(", ") }}</li>{% endif %}
+    {% if source.other_prs %}<li>PRs in other repos: {% for x in source.other_prs %}<a href="/i/{{ ("pr:" ~ x)|urlencode }}">{{ x }}</a>{{ ", " if not loop.last }}{% endfor %}</li>{% endif %}
     {% if source.plan_file %}<li>plan file {{ source.plan_file }}</li>{% endif %}
     {% if card.manual %}<li>added by you</li>{% endif %}
   </ul>

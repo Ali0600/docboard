@@ -2,6 +2,18 @@
 
 Teachable things that came up building docboard. Newest first.
 
+### A test that builds the middle by hand never sees the handoff drop a field
+
+The page's tests fill a sync result by hand (game names, a session's answers) and check what
+the page draws; the sync's tests check what derivation returns. Nothing ran a real sync into the
+store, so `sync.collect` could stop passing either field on and every test stayed green.
+
+**Why it came up:** the run's completeness check set each handoff to an empty value and the
+whole suite passed.
+
+**Takeaway:** for every field that crosses a layer, keep one test that goes through the real
+producer and reads it at the consumer, beside the fast tests that build the middle by hand.
+
 ### Text another program writes is matched against its generator, not its samples
 
 The board drops a proposal the owner started with "Do it here", which the app sends as a turn

@@ -2,6 +2,11 @@
 
 ## Backlog — alternatives worth trying later
 
+- **Stop folding different asks into one card** (2026-10-29, the same-session fold): about 2 of
+  the survey's 19 folds join two different asks, and the run's last review counted 2 folds that
+  join a Decide with a Do once tweet-extractor and browser-shield are read. A folded ask never
+  gets a card of its own. Revisit hook: the threshold in `textsim.similar`, or a same-kind rule in
+  `derive.needs`, checked against every live fold before and after.
 - **Bring the Windows PC's asks to the Mac's board** (2026-10-28, Windows): the PC now keeps a
   board of its own sessions. Revisit hook: a PC-side export of extracted items only (never raw
   records) to a private place the Mac reads as a second transcript source; needs ids are path-free,
@@ -15,17 +20,21 @@
   `config.Project`, added to `transcripts.discover`'s encodings.
 - **A Claude Artifact page instead of a local web page** (2026-10-27, where the board lives): a
   private claude.ai page with its own database, readable on a phone, filled from each session.
-  Deferred: a page there cannot read files, so every sync would have to go through a session.
-  Revisit hook: an exporter that writes the board's cards into an Artifact's database after each
-  `docboard sync`.
+  Deferred: a page there cannot read files, so every sync would have to go through a session;
+  but `/board` already runs in a session right after its sync, and the PC's sessions could write
+  to the same page. Revisit hook: a step in `/board` that writes the stored cards (with the
+  owner's moves) into an Artifact's database.
 - **A model reading the loose prose** (2026-10-27, the sources): memory "owed" sentences, wrap-up
   recaps and failed tool calls read by `claude -p` into suggested cards. Deferred: v1 parses only
-  structured sources, so it runs unattended and is tested exactly. Revisit hook: a `suggest` source
-  kind whose cards land in Needs you marked as suggestions.
+  structured sources, so it runs unattended and is tested exactly. The 2026-10-27 survey found a
+  plain pattern over memory "owed" lines brings back mostly history, so it needs the model.
+  Revisit hook: a `suggest` source kind whose cards land in Needs you marked as suggestions.
 - **Sync on SessionEnd** (2026-10-27): a hook syncs the project a session ran in. Deferred: desktop
   sessions rarely end (one session's transcript was still being written 15 days after its first
-  PR), and a hook adds work to every session end in every project. Revisit hook: a
-  `docboard sync --project-from-cwd` entry in `~/.claude/settings.json`'s hooks.
+  PR), and a hook adds work to every session end in every project. Revisit hook:
+  `docboard board --cwd <session dir>` in `~/.claude/settings.json`'s hooks (it already finds the
+  folder's project), with a short lock wait added to it, since `run_sync` waits 60 s for another
+  sync.
 - **Reading only what a transcript gained since the last sync** (2026-10-27, the page): a cursor
   per file (offset, inode, hashes of its head and of the bytes before the offset). Deferred: a
   full re-read of 1.9 GB takes about 10 s, and the board refreshes in the background. Revisit hook:
@@ -179,12 +188,19 @@ its asks and plan sat on the games repo's Platform and its PRs had no plan.
   few re-raised asks, so on the first sync three open asks take new ids; a move the owner had made
   on the old id would not follow (the owner had made none).
 - **A PR titled as the first of a series (`PR 1`, `PR A`) after the plan already holds one ends
-  that plan's claim:** *chosen*; it detached Run 14's PRs from Run 13's plan.
+  that plan's claim:** *chosen*. On the live data it detached #283–#290, #303 and #307 from plans
+  that had run on. #298 (Run 14's cue-sheet tool) stays on Run 13's plan: its title starts no
+  series, and Run 13's plan has no `## PR` sections that could say which PRs were its own.
   - **Close a plan at `/wrap-up` or `/compact`:** *rejected*: measured, it detached plans' own
     later PRs.
   - **Cap a plan at its `## PR` count:** *rejected*: an unrelated PR came first in one run.
 - **In a repo with no GitHub remote, a plan is Done once its session moved on or went quiet:**
   *chosen*, since no PR will ever show its progress.
+- **Two more boards, tweet-extractor and browser-shield:** *chosen* by the owner, each previewed
+  with a dry run first (41 and 13 cards). Most sessions in the other repos with recent
+  transcripts were scheduled runs, not hands-on work.
+  - **The other repos with recent transcripts:** not picked; a stanza each adds one (`docboard
+    board` in its folder prints it).
 
 Revisit hook: `route.py`, `derive._ask_owner`, `_plan_owner`, `_pr_owner`, and
 `transcripts.scan_all`.
@@ -234,6 +250,15 @@ page's thread and retried on every view, and one broken project stopped `docboar
   fold counted from the latest raise: *chosen* by the owner (sessions re-raise only when
   something changed).
   - **Keep it Done with a badge:** *rejected*: the change would show only to someone reading Done.
+- **A later item in the same session folds into an earlier card at 0.4 word overlap** (the
+  threshold `turn-audit.py` uses): *kept*, the default approved with the plan. The 2026-10-27
+  survey found 19 folds in 189 items, all between items of the same kind, but about 2 of them
+  join two different asks (the lowest at exactly 0.40). The reopen rule above handles a re-raise
+  after the owner resolved a card; a different ask folded in before that stays hidden.
+  - **A higher threshold, or folding only items of the same kind:** *deferred* (Backlog).
+- **A degraded source's banner names what it keeps and since when** ("CI cards keep their state
+  from the sync of …"), from the newest good sync that read that source: *chosen*, after the run's
+  completeness check found the degraded banner was the only one without a time.
 - **A card id another board holds is adopted once that board stops deriving it** (the row moves,
   with the owner's moves and history; until then the newcomer reports it as "elsewhere"):
   *chosen*, ahead of cards following their files between boards. Transcript ids are global by
