@@ -2,24 +2,56 @@
 
 from __future__ import annotations
 
-import fcntl
 import os
 import shlex
+import sys
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
-from docboard.config import REPO_ROOT, Config, Project
+from docboard import paths
+from docboard.config import Config, Project
 from docboard.store import ApplyReport, FloorError, Store
 from docboard.sync import SyncResult, collect
 
 MESSAGE_CAP = 300
 
 
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
+
+
 class Busy(RuntimeError):
     pass
+
+
+def _try_lock(fd: int) -> bool:
+    """Takes the lock without waiting; False when another process holds it. The operating
+    system frees it when the holder exits, however it exits."""
+    if sys.platform == "win32":
+        os.lseek(fd, 0, os.SEEK_SET)
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)  # byte 0; locking past the end is allowed
+        except OSError:
+            return False
+        return True
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    return True
+
+
+def _unlock(fd: int) -> None:
+    if sys.platform == "win32":
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 class SyncFailed(RuntimeError):
@@ -39,10 +71,7 @@ def describe(e: BaseException, project: Project) -> str:
 
 def accept_command(project: str) -> str:
     """What the owner runs to accept a drop the floor refused."""
-    return (
-        f"cd {shlex.quote(str(REPO_ROOT))} && uv run docboard sync --accept-drop"
-        f" --project {shlex.quote(project)}"
-    )
+    return paths.command(f"sync --accept-drop --project {shlex.quote(project)}")
 
 
 @contextmanager
@@ -52,18 +81,14 @@ def sync_lock(lock_path: Path, wait: float) -> Iterator[None]:
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
     deadline = time.monotonic() + wait
     try:
-        while True:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    raise Busy("another sync is running") from None
-                time.sleep(0.2)
+        while not _try_lock(fd):
+            if time.monotonic() >= deadline:
+                raise Busy("another sync is running")
+            time.sleep(0.2)
         try:
             yield
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            _unlock(fd)
     finally:
         os.close(fd)
 
@@ -83,6 +108,7 @@ def run_sync(cfg: Config, project: Project, db_path: Path, wait: float = 60.0,
         try:
             result = collect(cfg, project, now)
             with Store(db_path) as store:
+                store.backup_if_due(now)
                 report = store.apply(result, now.isoformat(), accept_drop=accept_drop)
         except FloorError:
             raise

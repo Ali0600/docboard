@@ -108,7 +108,10 @@ def test_a_symlinked_path_and_an_unresolved_config_path_both_match(
     repo: Path, tmp_path: Path
 ) -> None:
     link = tmp_path / "link"
-    link.symlink_to(repo)
+    try:
+        link.symlink_to(repo)
+    except OSError:
+        pytest.skip("this machine cannot make symlinks (Windows without developer mode)")
     assert where(cfg(mono(repo)), link / "games" / "beta") == ("demo", "beta")
     assert where(cfg(mono(link)), repo / "games" / "beta") == ("demo", "beta")
 
@@ -202,7 +205,7 @@ def test_board_prints_the_games_link_and_how_to_start_the_page(
     out = capsys.readouterr().out
     assert code == 0
     assert f"board: http://127.0.0.1:{port}/p/demo?sub=alpha" in out
-    assert "page: not running; start it with:" in out
+    assert "page: not running; start it with: docboard serve" in out
 
 
 def test_board_syncs_then_falls_back_when_the_game_has_no_board(

@@ -2,6 +2,18 @@
 
 Teachable things that came up building docboard. Newest first.
 
+### A byte prefilter is case-sensitive; Windows paths are not
+
+The scan skips a transcript line unless it holds the exact bytes `"file_path":"<root>`. On
+Windows the same file can be written `C:\\Users\\…`, `c:/users/…` or in any case, so most
+touches would have been skipped before anything parsed them.
+
+**Why it came up:** a test with three spellings of one Windows root found one touch of three.
+
+**Takeaway:** when a fast byte check stands in front of a slower exact one, make it at least as
+forgiving as the data's own rules (here: lower-case the haystack on Windows), and test it with
+every spelling the writer can produce.
+
 ### A copied record keeps its timestamp, so "earliest copy wins" needs a tie-break
 
 A continued or forked Claude Code session copies its parent's records into its own file with

@@ -15,8 +15,8 @@ any session. It replaced an earlier dashboard on 2026-10-27.
 
 ```sh
 uv sync                                    # Python 3.12 and the dev tools, from uv.lock
-cp config/projects.example.toml config/projects.toml   # then list your projects
-uv run docboard sync                       # read every source into data/board.db
+git config core.hooksPath .githooks        # the privacy scan before every push (once per clone)
+uv run docboard sync                       # read every source into the board
 uv run docboard serve                      # the board on http://127.0.0.1:8742
 uv run docboard board --cwd ~/some/folder  # sync the board that folder belongs to; print its link
 uv run docboard sync --accept-drop --project p   # store a sync refused because a source really shrank
@@ -24,20 +24,47 @@ uv run docboard sync --accept-drop --project p   # store a sync refused because 
 ```
 
 More: `docboard sync --dry-run --sample 3` prints the board as a table without storing anything;
-`--json data/{project}.json` writes every card, and `docboard diff a.json b.json --kinds
+`--json out/{project}.json` writes every card, and `docboard diff a.json b.json --kinds
 idea,roadmap --strict` proves a docs move kept every card id; `docboard privacy` scans this repo
-for personal identifiers.
+for personal identifiers (`--commits RANGE` a range's commits, `--stdin` a PR's text).
 
-Only the projects listed in `config/projects.toml` are read. The database and `--json` files hold
-your own sessions' text, so they are owner-only (mode 600) and `data/` is git-ignored. Opening a
-board older than two minutes refreshes it in the background and the page reloads itself when the
-sync is done; "Sync now" does it at once.
+### Where the board lives
 
-On the page: cards new since you last pressed "Mark all seen" are marked (and counted per game);
-the whole project's Ideas fold to a count per game until you open one; cards you hid are listed
-with `?hidden=1`, and cards gone from their sources at the foot; a session's own page (`/s/<id>`)
-lists its cards on every board and the answers that shaped no plan. `docboard board` prints how
-many asks wait in your game and how many cards are new.
+Not in this checkout: a branch checked out here must never change which database the live board
+uses. The database (`board.db`, with its `backups/`), the config (`projects.toml`) and the private
+terms (`private-identifiers.txt`) live in the user's data folder:
+
+| System | Folder |
+|---|---|
+| macOS | `~/Library/Application Support/docboard` |
+| Windows | `%LOCALAPPDATA%\docboard` |
+| Linux | `$XDG_DATA_HOME/docboard`, else `~/.local/share/docboard` |
+
+`DOCBOARD_HOME` moves all of it (a dev board, the tests); `--config`/`$DOCBOARD_CONFIG` and `--db`
+name one file. Start the config from `config/projects.example.toml`. On Windows write paths in
+single quotes (`path = 'C:\Users\you\code\repo'`) or with `/`: in double quotes `\U` is a TOML
+escape. Only the projects listed in `projects.toml` are read. The database and `--json` files
+hold your own sessions' text, so they are owner-only (mode 600). A copy of the database is kept
+before any schema change and once a day (`backups/`, 7 daily and 5 pre-migration copies, on this
+disk only); to restore one, stop the page and copy it over `board.db`.
+
+**Moving the board** (once, from a checkout that kept it in `data/` and `config/`): stop the page,
+then `uv run docboard move-data`. It copies the database with SQLite's backup, checks the copy
+holds the same cards, moves and events, copies the config and the terms, and puts the old files
+aside in `data/moved-<date>/` (git-ignored). Until then every command refuses to start an empty
+board. To undo: stop the page, move the three files back from `data/moved-<date>/`, and check out
+the commit before the move.
+
+### Windows
+
+The same commands run on Windows (CI tests Linux, Windows and macOS): the lock is
+`msvcrt.locking`, transcript paths are matched with either slash and any case, and the PC keeps a
+board of its own sessions. Shipping the PC's asks to the Mac's board is not built yet (the
+Backlog).
+
+Opening a board older than two minutes refreshes it in the background and the page reloads itself
+when the sync is done; "Sync now" does it at once. `docboard board` says when the running page
+has older code than the checkout, so it needs a restart.
 
 ## How it works
 
@@ -97,28 +124,35 @@ many asks wait in your game and how many cards are new.
   Content-Security-Policy allows no script but the page's own 50-line drag-and-drop file. Every
   card also has a Move control that works without it.
 - **Privacy** (`privacy.py`): this repo is public, so every tracked or addable file is scanned for
-  home-folder paths naming a real user, email addresses outside placeholder domains, and the terms
-  in a git-ignored `config/private-identifiers.txt`. Test fixtures are synthetic.
-- Dependencies resolve only to releases uploaded at least 14 days ago (`[tool.uv] exclude-newer`).
+  home-folder paths naming a real user (macOS, Linux or Windows, also as JSON writes them), email
+  addresses outside placeholder domains, and the terms in the data folder's
+  `private-identifiers.txt`. A pre-push hook (`.githooks/pre-push`) scans what a push carries
+  (every added line, message, author address and branch name) and refuses without the terms; CI
+  scans a PR's commits and its title and body for paths and addresses. Test fixtures are synthetic.
+- Dependencies resolve only to releases uploaded at least 14 days ago (`[tool.uv] exclude-newer`);
+  Dependabot proposes updates weekly with the same 14-day cooldown.
 - Decisions: [docs/DECISIONS.md](docs/DECISIONS.md). Gotchas met on the way:
   [docs/learnings.md](docs/learnings.md).
 
 ## Experience Gained
 
-- A log-ingestion pipeline over 1.89 GB of Claude Code session transcripts (52 files) in about 6 s,
-  using a byte prefilter before JSON parsing and de-duplicating records copied across files.
+- A log-ingestion pipeline over 1.97 GB of Claude Code session transcripts (58 files, four
+  projects) in one pass of about 7 s, about 0.2 s a board once warm (a per-file memo keyed by the
+  file's identity, size and time), with a byte prefilter before JSON parsing and records copied
+  across continued sessions counted once.
 - An idempotent sources-to-cards derivation with content-derived, versioned ids. A test moves a doc
-  from the root into a sub-project and proves all of its cards keep their ids.
-- 12 guards each proven by a deliberate sabotage before merging, among them the id rule, the
-  cross-file dedupe, the plan rule, the collapse floor that writes nothing, a move that must not
-  outlive its source, and the page's Host and same-origin checks.
+  from the root into a sub-project and proves all of its cards keep their ids; a routing test
+  proves every session card lands on exactly one of the configured boards.
+- Guards each proven by a test that failed first (about 120 tests added over six PRs, each PR's
+  red run in its description), among them the id rule, the collapse floor that writes nothing,
+  a gh outage that freezes PRs instead of refusing the sync, and the page's Host and same-origin
+  checks.
 - A localhost web app hardened against DNS rebinding, cross-site writes and XSS (Host allowlist,
   Origin and Sec-Fetch-Site checks, a strict Content-Security-Policy, no third-party JavaScript),
   checked in a real browser, which caught a bug the 80 tests had missed.
 - A supply-chain cooldown on every dependency: uv resolves only releases at least 14 days old,
-  checked against PyPI's upload times (ruff held at 0.17.0 while 0.17.1 to 0.17.3 were inside the
-  window).
-- A privacy gate over 3 kinds of personal identifier, proven to fail on a planted home path before
-  the first push to a public repo.
-- CI on GitHub Actions with both third-party actions pinned to full commit SHAs and a read-only
-  token.
+  and Dependabot proposes updates with the same cooldown.
+- A privacy gate over 3 kinds of personal identifier (Windows paths included): the files on every
+  CI run, every commit's added lines, messages and authors before each push, and a PR's text in CI.
+- CI on Linux, Windows and macOS through GitHub Actions, with third-party actions pinned to full
+  commit SHAs and a read-only token.

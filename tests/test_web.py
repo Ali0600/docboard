@@ -214,7 +214,7 @@ def test_the_refused_banner_names_the_drop_and_the_command(env: tuple[TestClient
         s.apply(result([], {**COUNTS, "backlog": 3}), now())
     page = client.get("/p/demo").text
     assert "backlog: 10 → 3" in page
-    assert "uv run docboard sync --accept-drop --project demo" in page
+    assert "docboard sync --accept-drop --project demo" in page
 
 
 def test_a_failing_background_sync_shows_and_is_not_restarted(tmp_path: Path) -> None:
@@ -679,3 +679,46 @@ def test_a_link_whose_address_has_parentheses_keeps_its_text() -> None:
     from docboard.web import plain
 
     assert plain("see [the doc](https://x.example/a_(b)) now") == "see the doc now"
+
+
+def test_sync_now_starts_one_background_sync(env: tuple[TestClient, Path]) -> None:
+    client, _ = env
+    board = client.app.state.board
+    started: list[str] = []
+    gate = __import__("threading").Event()
+
+    def slow(cfg: Config, project: Project, db: Path, wait: float = 0) -> None:
+        started.append(project.name)
+        gate.wait(10)
+
+    import docboard.runner as runner_mod
+
+    original = runner_mod.run_sync
+    runner_mod.run_sync = slow
+    try:
+        for _ in range(3):
+            assert client.post("/p/demo/sync", data={}, headers=SAME).status_code == 303
+        assert board.syncing("demo") and started == ["demo"]
+    finally:
+        gate.set()
+        board.join(timeout=10)
+        runner_mod.run_sync = original
+    assert not board.syncing("demo")
+
+
+def test_a_busy_background_sync_clears_its_flag(env: tuple[TestClient, Path]) -> None:
+    client, _ = env
+    board = client.app.state.board
+    import docboard.runner as runner_mod
+
+    def busy(*args: object, **kw: object) -> None:
+        raise runner_mod.Busy("another sync is running")
+
+    original = runner_mod.run_sync
+    runner_mod.run_sync = busy
+    try:
+        client.post("/p/demo/sync", data={}, headers=SAME)
+        assert board.join(timeout=10)
+    finally:
+        runner_mod.run_sync = original
+    assert not board.syncing("demo")

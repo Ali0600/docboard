@@ -11,7 +11,8 @@
 | `uv run docboard serve [--port 8742]` | The board on `http://127.0.0.1:8742`; any host but loopback is refused. Start it in the background and check it in the built-in browser. |
 | `uv run docboard board [--cwd dir] [--no-sync] [--port 8742]` | Finds the configured project (and sub-project) a folder belongs to, a git worktree's included, syncs that project and prints its board's link and whether the page is running (exit 2: in no configured project; 1: the sync was not stored). The global `/board` command runs it from a session's folder. |
 | `uv run docboard diff a.json b.json [--kinds idea,roadmap] [--strict]` | Card ids only in one run, and fields changed in both; `--strict` exits 1 when an id came or went (the check a docs move must pass). |
-| `uv run docboard privacy` | Scans every tracked or addable file for personal identifiers. |
+| `uv run docboard privacy [--commits RANGE \| --stdin \| --pre-push]` | Scans every tracked or addable file for personal identifiers; or a range's commits (messages, authors, added lines); or text on stdin (a PR's); or, as the pre-push hook, what a push carries (refused without the private terms). |
+| `uv run docboard move-data` | Once: moves the board out of the checkout into the data folder, with the page stopped. The owner's step, never run unasked. |
 | `uv run pytest -k <name>` | One test while iterating. |
 
 ## Rules an agent must not guess
@@ -21,8 +22,15 @@
   with the transcripts' own serializer (compact separators, raw UTF-8), never copied from a
   transcript. `tests/test_privacy.py` must pass before every push; a new kind of identifier gets a
   pattern there and a test that fails without it.
-- **Local state stays out of git:** `data/`, `config/projects.toml`, `config/private-identifiers.txt`
-  (all in `.gitignore`; prove a new one with `git check-ignore -v <path>`).
+- **The board's state lives in the user's data folder** (`paths.py`: macOS
+  `~/Library/Application Support/docboard`, Windows `%LOCALAPPDATA%\docboard`), shared by every
+  checkout and worktree. A test or a branch never touches it: the tests run under their own
+  `DOCBOARD_HOME` (`tests/conftest.py`), and a branch is tried with `DOCBOARD_HOME` pointing at a
+  scratch copy. Never commit a file from there; the old places (`data/`, `config/projects.toml`,
+  `config/private-identifiers.txt`) stay in `.gitignore`.
+- **Every push runs the privacy scan** (`git config core.hooksPath .githooks`, once per clone);
+  never push with `--no-verify`. Before `gh pr create`, pipe the title and body through
+  `uv run docboard privacy --stdin`.
 - **Sources are read-only.** Never write to a configured repo, `~/.claude/plans` or a transcript.
   Read only the projects listed in `config/projects.toml`; never discover projects on disk. Docs
   are read at the configured ref, never a working tree another session may be using.

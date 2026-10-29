@@ -18,15 +18,15 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from docboard.config import REPO_ROOT
 from docboard.derive import COLUMNS, DONE, NEEDS_YOU, RECENT
 from docboard.sync import GH_FLOOR_KEYS, SyncResult, floor_drops, gh_degraded
 from docboard.textsim import jaccard
 
-DEFAULT_DB = REPO_ROOT / "data" / "board.db"
 HIDDEN = "hidden"
 MOVABLE = (*COLUMNS, HIDDEN)
 RENAME_SAME = 0.6
+BACKUP_EVERY = timedelta(hours=24)
+KEEP_DAILY, KEEP_MIGRATION = 7, 5
 NEW_WINDOW = timedelta(hours=24)  # "new" before the owner ever marked the board seen
 DOC_KINDS = ("idea", "roadmap")
 # Kinds that wait on the owner: while one sits in Needs you, it stays there even after its
@@ -244,7 +244,7 @@ def _card_row(card: object) -> dict:
 
 
 class Store:
-    def __init__(self, path: Path = DEFAULT_DB) -> None:
+    def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         if not path.exists():
             os.close(os.open(path, os.O_WRONLY | os.O_CREAT, 0o600))
@@ -278,6 +278,9 @@ class Store:
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
         if version > len(MIGRATIONS):
             raise StoreError(f"{self.path} is schema {version}, newer than this docboard knows")
+        if 0 < version < len(MIGRATIONS):
+            # The owner's moves exist only here: a copy before any schema change.
+            backup(self.db, self.path, f"before-v{len(MIGRATIONS)}", datetime.now(UTC))
         for i in range(version, len(MIGRATIONS)):
             with self.tx() as db:
                 for stmt in _statements(MIGRATIONS[i]):
@@ -289,6 +292,14 @@ class Store:
             "INSERT INTO event (at, actor, card_id, kind, detail) VALUES (?, ?, ?, ?, ?)",
             (at, actor, card_id, kind, detail),
         )
+
+    def backup_if_due(self, now: datetime) -> Path | None:
+        """A daily copy, made at most once a day (when the newest is over a day old)."""
+        folder = self.path.parent / "backups"
+        newest = max((p.stat().st_mtime for p in folder.glob("board-*-daily.db")), default=None)
+        if newest is not None and now.timestamp() - newest < BACKUP_EVERY.total_seconds():
+            return None
+        return backup(self.db, self.path, "daily", now)
 
     # --- sync ----------------------------------------------------------------------------
 
@@ -916,6 +927,35 @@ class Store:
             self._event(now, "owner", card_id, "deleted", "")
 
 
+def backup(db: sqlite3.Connection, db_path: Path, reason: str, now: datetime) -> Path:
+    """A consistent copy of the database (SQLite's backup), owner-only, beside it in backups/,
+    and the old ones pruned: 7 daily copies and 5 taken before a migration are kept."""
+    folder = db_path.parent / "backups"
+    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    name = f"board-{now.astimezone(UTC).strftime('%Y%m%dT%H%M%SZ')}-{reason}.db"
+    tmp = folder / (name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.close(fd)
+    dst = sqlite3.connect(tmp)
+    try:
+        db.backup(dst)
+    finally:
+        dst.close()
+    os.replace(tmp, folder / name)
+    prune(folder)
+    return folder / name
+
+
+def prune(folder: Path, keep_daily: int = KEEP_DAILY, keep_migration: int = KEEP_MIGRATION) -> None:
+    """Daily copies and pre-migration copies are kept apart, so dailies never push one out."""
+    for pattern, keep in (
+        ("board-*-daily.db", keep_daily),
+        ("board-*-before-v*.db", keep_migration),
+    ):
+        for old in sorted(folder.glob(pattern))[:-keep]:
+            old.unlink()
+
+
 def _js(value: dict | None) -> str | None:
     return None if value is None else json.dumps(value, sort_keys=True)
 
@@ -925,4 +965,4 @@ def _statements(script: str) -> list[str]:
     return [s.strip() for s in script.split(";") if s.strip()]
 
 
-__all__ = ["DEFAULT_DB", "HIDDEN", "MOVABLE", "NEEDS_YOU", "ApplyReport", "FloorError", "Store"]
+__all__ = ["HIDDEN", "MOVABLE", "NEEDS_YOU", "ApplyReport", "FloorError", "Store"]

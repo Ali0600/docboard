@@ -98,6 +98,24 @@ def dumps(record: dict) -> str:
 
 
 def write(path: Path, records: list[dict]) -> Path:
+    """Bytes, not text: on Windows write_text would turn each "\\n" into "\\r\\n"."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(dumps(r) + "\n" for r in records), encoding="utf-8")
+    path.write_bytes("".join(dumps(r) + "\n" for r in records).encode("utf-8"))
     return path
+
+
+def fake_exe(folder: Path, name: str, body: str) -> Path:
+    """A stand-in program (for gh) that runs `body` as Python, on every OS: a script with a
+    shebang on macOS and Linux, a .cmd shim beside it on Windows."""
+    import os
+    import sys
+
+    folder.mkdir(parents=True, exist_ok=True)
+    script = folder / f"{name}.py"
+    script.write_bytes(f"#!{sys.executable}\nimport sys, time\n{body}\n".encode())
+    if os.name == "nt":
+        shim = folder / f"{name}.cmd"
+        shim.write_bytes(f'@"{sys.executable}" "%~dp0{name}.py" %*\r\n'.encode())
+        return shim
+    script.chmod(0o755)
+    return script

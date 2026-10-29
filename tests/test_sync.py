@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -105,9 +106,9 @@ def test_transcripts_of_the_project_are_scanned(tmp_path: Path) -> None:
 
 def test_a_failing_gh_degrades_instead_of_reporting_no_prs(tmp_path: Path) -> None:
     repo = make_repo(tmp_path, {"docs/DECISIONS.md": BACKLOG})
-    fake = tmp_path / "gh"
-    fake.write_text("#!/bin/sh\necho 'auth: keychain locked' >&2\nexit 4\n")
-    fake.chmod(0o755)
+    fake = f.fake_exe(
+        tmp_path, "gh", "print('auth: keychain locked', file=sys.stderr); sys.exit(4)"
+    )
     project = Project(name="demo", path=repo, docs_ref="HEAD", github="acme/demo")
     cfg = Config(projects=(project,), claude_home=tmp_path / "claude")
     result = sync.collect(cfg, project, NOW, gh=str(fake))
@@ -131,6 +132,7 @@ def test_floors_flag_a_source_that_collapsed() -> None:
     assert sync.floor_problems({"backlog": 0}, {}) == []  # nothing to compare with
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no POSIX modes")
 def test_the_json_file_is_private(tmp_path: Path) -> None:
     repo = make_repo(tmp_path, {"docs/DECISIONS.md": BACKLOG})
     out = tmp_path / "out" / "board.json"
@@ -146,10 +148,8 @@ MERGED = (
 )
 
 
-def fake_gh(path: Path, script: str) -> Path:
-    path.write_text("#!/bin/sh\n" + script + "\n")
-    path.chmod(0o755)
-    return path
+def fake_gh(path: Path, body: str) -> Path:
+    return f.fake_exe(path.parent, path.name, body)
 
 
 def gh_project(tmp_path: Path, repo: Path) -> tuple[Config, Project]:
@@ -163,7 +163,7 @@ def test_gh_failing_after_a_good_sync_keeps_the_board_syncing(
     repo = make_repo(tmp_path, {"docs/DECISIONS.md": BACKLOG})
     cfg, project = gh_project(tmp_path, repo)
     db = tmp_path / "data" / "board.db"
-    good = fake_gh(tmp_path / "gh-good", f"cat <<'J'\n{MERGED}\nJ")
+    good = fake_gh(tmp_path / "gh-good", f"print({MERGED!r})")
     monkeypatch.setattr(ghsrc, "find_gh", lambda: str(good))
     runner.run_sync(cfg, project, db, now=NOW)
     rec = dict(
@@ -171,7 +171,9 @@ def test_gh_failing_after_a_good_sync_keeps_the_board_syncing(
         cwd=str(repo),
     )
     f.write(tmp_path / "claude" / "projects" / encode_path(repo) / "s1.jsonl", [rec])
-    bad = fake_gh(tmp_path / "gh-bad", "echo 'auth: keychain locked' >&2; exit 4")
+    bad = fake_gh(
+        tmp_path / "gh-bad", "print('auth: keychain locked', file=sys.stderr); sys.exit(4)"
+    )
     monkeypatch.setattr(ghsrc, "find_gh", lambda: str(bad))
     runner.run_sync(cfg, project, db, now=NOW)
     with Store(db) as s:
@@ -184,7 +186,7 @@ def test_a_hung_gh_degrades(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     repo = make_repo(tmp_path, {"docs/DECISIONS.md": BACKLOG})
     cfg, project = gh_project(tmp_path, repo)
     monkeypatch.setattr(ghsrc, "TIMEOUT", 0.3)
-    hung = fake_gh(tmp_path / "gh", "exec sleep 5")
+    hung = fake_gh(tmp_path / "gh", "time.sleep(5)")
     got = sync.collect(cfg, project, NOW, gh=str(hung))
     assert got.degraded and "timed out" in got.degraded[0]
 
@@ -192,7 +194,7 @@ def test_a_hung_gh_degrades(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
 def test_gh_output_that_is_not_json_degrades(tmp_path: Path) -> None:
     repo = make_repo(tmp_path, {"docs/DECISIONS.md": BACKLOG})
     cfg, project = gh_project(tmp_path, repo)
-    chatty = fake_gh(tmp_path / "gh", "echo 'Welcome to gh! A new release is out.'")
+    chatty = fake_gh(tmp_path / "gh", "print('Welcome to gh! A new release is out.')")
     got = sync.collect(cfg, project, NOW, gh=str(chatty))
     assert got.degraded and "not the expected JSON" in got.degraded[0]
 

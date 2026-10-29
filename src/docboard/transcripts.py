@@ -32,6 +32,30 @@ EVIDENCE_CAP = 300
 FILE_TOOLS = frozenset({"Read", "Edit", "Write", "MultiEdit", "NotebookEdit"})
 _PATH_KEYS = (b'"file_path":"', b'"notebook_path":"')
 _ALNUM = re.compile(r"[A-Za-z0-9]")
+IS_WINDOWS = os.name == "nt"
+
+
+def _norm(path: str, windows: bool) -> str:
+    """A path for comparing: on Windows "/" for "\\" and case ignored, as the file system does."""
+    return path.replace("\\", "/").casefold() if windows else path
+
+
+def _spellings_of(root: str, windows: bool) -> set[str]:
+    """How a root may be written in a transcript: as is, and on Windows with "/" and with the
+    drive letter in either case."""
+    out = {root}
+    if windows:
+        for p in (root, root.replace("\\", "/")):
+            out.add(p)
+            if len(p) > 1 and p[1] == ":":
+                out |= {p[0].upper() + p[1:], p[0].lower() + p[1:]}
+    return out
+
+
+def _json_bytes(text: str) -> bytes:
+    """A string as JSON writes it inside quotes (backslashes doubled), the transcripts' bytes."""
+    return json.dumps(text, ensure_ascii=False)[1:-1].encode("utf-8")
+
 
 _CWD = re.compile(rb'"cwd":"([^"]*)"')
 _NY_HEAD = re.compile(r"^#{2,3}[ \t]*Needs you[ \t]*$", re.M)
@@ -129,25 +153,36 @@ class Touch:
 
 class Roots:
     """Every configured project's root, as the transcripts spell it (a folder name may show the
-    path in another case than the config does)."""
+    path in another case than the config does; on Windows "/" or "\\" and either drive case)."""
 
-    def __init__(self, spellings: dict[str, Iterable[str]]) -> None:
+    def __init__(self, spellings: dict[str, Iterable[str]], windows: bool = IS_WINDOWS) -> None:
+        self.windows = windows
         self.spellings = {name: tuple(sorted(set(sp))) for name, sp in spellings.items()}
         pairs = [(sp, name) for name, sps in self.spellings.items() for sp in sps]
-        self._deepest = sorted(pairs, key=lambda p: (-len(p[0]), p[0]))
-        self.markers = tuple(sorted({key + sp.encode("utf-8") for sp, _ in pairs
-                                     for key in _PATH_KEYS}))  # fmt: skip
-        self.signature = repr(sorted(pairs))
+        normed = {(_norm(sp, windows), name) for sp, name in pairs}
+        self._deepest = sorted(normed, key=lambda p: (-len(p[0]), p[0]))
+        markers = {key + _json_bytes(v) for sp, _ in pairs for v in _spellings_of(sp, windows)
+                   for key in _PATH_KEYS}  # fmt: skip
+        # Windows paths ignore case, so there the bytes are compared lower-cased.
+        self.markers = tuple(sorted({m.lower() for m in markers} if windows else markers))
+        self.signature = repr((sorted(pairs), windows))
 
     def owner(self, path: str) -> tuple[str, str] | None:
-        """(project, path relative to its root) for a file inside a root, the deepest winning."""
+        """(project, path relative to its root, "/"-joined) for a file inside a root, the
+        deepest winning."""
+        np = _norm(path, self.windows)
+        slashed = path.replace("\\", "/") if self.windows else path
         for sp, name in self._deepest:
-            if path.startswith(sp + "/"):
-                return name, path[len(sp) + 1 :]
+            if np.startswith(sp + "/"):
+                return name, slashed[len(sp) + 1 :]
         return None
 
     def inside(self, path: str, name: str) -> bool:
-        return any(path == sp or path.startswith(sp + "/") for sp in self.spellings.get(name, ()))
+        np = _norm(path, self.windows)
+        return any(
+            np == (n := _norm(sp, self.windows)) or np.startswith(n + "/")
+            for sp in self.spellings.get(name, ())
+        )
 
 
 @dataclass(frozen=True)
@@ -211,6 +246,7 @@ class Scan:
     parse_errors_by: Counter = field(default_factory=Counter)
     long_by: Counter = field(default_factory=Counter)
     unreadable_by: Counter = field(default_factory=Counter)
+    touches_by: Counter = field(default_factory=Counter)  # file touches under each project
     roots: Roots | None = None
 
     def holding(self, kind: str, key: object, session: str) -> set[str]:
@@ -250,7 +286,7 @@ def spelling(root: Path, folder: str) -> str:
 
 
 def discover(
-    projects: Sequence[tuple[str, Path]], transcripts_dir: Path
+    projects: Sequence[tuple[str, Path]], transcripts_dir: Path, windows: bool = IS_WINDOWS
 ) -> tuple[list[SessionFile], Roots]:
     """Main transcripts of every project (its worktrees' and sub-folders' too, never subagents').
 
@@ -263,7 +299,7 @@ def discover(
     spellings: dict[str, set[str]] = {name: {str(path)} for name, path in projects}
     files: list[SessionFile] = []
     if not transcripts_dir.is_dir():
-        return files, Roots(spellings)
+        return files, Roots(spellings, windows)
     for d in sorted(transcripts_dir.iterdir()):
         if not d.is_dir():
             continue
@@ -281,7 +317,7 @@ def discover(
             for f in sorted(d.glob("*.jsonl"))
             if f.is_file()
         )
-    return files, Roots(spellings)
+    return files, Roots(spellings, windows)
 
 
 def session_files(root: Path, transcripts_dir: Path) -> list[tuple[Path, bool]]:
@@ -370,8 +406,9 @@ class _FileScan:
         if b'"type":"pr-link"' in raw or b'"type":"custom-title"' in raw:
             self.meta(raw)
         elif b'"type":"assistant"' in raw:
+            hay = raw.lower() if self.roots.windows else raw
             if any(m in raw for m in _ASSISTANT_MARKERS) or any(
-                m in raw for m in self.roots.markers
+                m in hay for m in self.roots.markers
             ):
                 self.assistant(raw)
         elif b'"type":"user"' in raw:
@@ -654,10 +691,13 @@ def _merge(scan: Scan, fr: FileResult, order: dict[str, tuple]) -> None:
 
 
 def scan_all(
-    projects: Sequence[tuple[str, Path]], transcripts_dir: Path, memo: FileMemo | None = None
+    projects: Sequence[tuple[str, Path]],
+    transcripts_dir: Path,
+    memo: FileMemo | None = None,
+    windows: bool = IS_WINDOWS,
 ) -> Scan:
     """Every configured project's transcripts in one pass, each file filed under one project."""
-    files, roots = discover(projects, transcripts_dir)
+    files, roots = discover(projects, transcripts_dir, windows)
     memo = memo or FileMemo()
     memo.forget_missing(f.path for f in files)
     scan = Scan(roots=roots)
@@ -706,9 +746,12 @@ def scan_all(
     }
     for fr in read:
         _merge(scan, fr, order)
+    scan.touches_by.update(t.project for t in scan.touches.values())
     return scan
 
 
-def scan_project(root: Path, transcripts_dir: Path, name: str = "") -> Scan:
+def scan_project(
+    root: Path, transcripts_dir: Path, name: str = "", windows: bool = IS_WINDOWS
+) -> Scan:
     """One project's transcripts (the single-project form of `scan_all`)."""
-    return scan_all([(name, root)], transcripts_dir)
+    return scan_all([(name, root)], transcripts_dir, windows=windows)
