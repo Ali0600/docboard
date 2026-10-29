@@ -49,10 +49,21 @@ _HAND_CHECK = re.compile(
     r"^(#{1,6})\s[^\n]*\bhand[- ]?checks?\b[^\n]*$", re.IGNORECASE | re.MULTILINE
 )
 _ANY_HEADING = re.compile(r"^(#{1,6})\s", re.MULTILINE)
-_FENCE = re.compile(r"^ {0,3}(```|~~~)")
+# CommonMark fences: an opening run of 3+ backticks (whose info string holds no backtick, so
+# "```code``` text" is inline code) or tildes, closed by a run of the same character at least as
+# long with nothing after it.
+_FENCE_OPEN = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+_FENCE_CLOSE = re.compile(r"^ {0,3}(`{3,}|~{3,})[ \t]*$")
 # The app's "Do it here" on a proposal card sends this as the owner's turn in its session.
 _DO_HERE = re.compile(r"^\s*Do this task here: [\u201c\"](.+?)[\u201d\"]")
 PROPOSAL_LIFE = timedelta(days=7)  # the app drops a proposal card not started in a week
+# The app writes a title into "Do this task here" with every quotation mark (Unicode's
+# Quotation_Mark) as ', cut at 200 characters with an ellipsis (read from its own bundle).
+_QUOTES = re.compile(
+    "[\"'\u00ab\u00bb\u2018-\u201f\u2039\u203a\u2e42\u300c-\u300f\u301d-\u301f"
+    "\ufe41-\ufe44\uff02\uff07\uff62\uff63]"
+)
+APP_TITLE_CAP = 200
 
 
 @dataclass
@@ -108,14 +119,20 @@ class Inputs:
 def _unfenced(text: str) -> str:
     """The text with every fenced code block blanked (same length, so offsets still match): a
     `# comment` in a shell block is not a heading."""
-    out, inside = [], False
+    out: list[str] = []
+    fence: tuple[str, int] | None = None  # (character, length) while inside a fence
     for line in text.splitlines(keepends=True):
-        fence = _FENCE.match(line) is not None
-        if inside or fence:
-            line = "".join(c if c in "\r\n" else " " for c in line)
-        out.append(line)
-        if fence:
-            inside = not inside
+        body = line.rstrip("\r\n")
+        code = fence is not None
+        if fence is None:
+            m = _FENCE_OPEN.match(body)
+            if m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
+                fence, code = (m.group(1)[0], len(m.group(1))), True
+        else:
+            m = _FENCE_CLOSE.match(body)
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= fence[1]:
+                fence = None
+        out.append("".join(c if c in "\r\n" else " " for c in line) if code else line)
     return "".join(out)
 
 
@@ -872,9 +889,14 @@ class _Deriver:
         leaves once dismissed, started (by its id, or by the owner's "Do it here") or a week old,
         when the app drops it. A call that proposed nothing (no task id came back) is no card."""
         scan = self.inp.scan
+        started = {  # a start by id the owner refused at its prompt started nothing
+            task
+            for tid, task in scan.started.items()
+            if getattr(scan.results.get(tid), "outcome", "") != "rejected"
+        }
         for prop in scan.proposals.values():
             task = scan.proposal_tasks.get(prop.id)
-            if task is None or task in scan.dismissed or task in scan.started:
+            if task is None or task in scan.dismissed or task in started:
                 continue
             at = _t(prop.ts)
             if self.inp.now - at > PROPOSAL_LIFE or self._done_here(prop.session, at, prop.title):
@@ -899,10 +921,16 @@ class _Deriver:
             self.cards.append(card)
 
     def _done_here(self, session: str, at: datetime, title: str) -> bool:
-        """Whether the owner started a proposal from its card ("Do it here") in its session."""
+        """Whether the owner started a proposal from its card ("Do it here") in its session,
+        comparing the title as the app writes it."""
+        want = _QUOTES.sub("'", title.strip())
         for h in self.humans.get(session, ()):
             m = _DO_HERE.match(h.text)
-            if m and _t(h.ts) > at and m.group(1).strip() == title.strip():
+            if m is None or _t(h.ts) <= at:
+                continue
+            sent = m.group(1).strip()
+            cut = sent[:-1].rstrip() if sent.endswith("\u2026") else None
+            if sent == want or (cut and len(cut) >= APP_TITLE_CAP - 10 and want.startswith(cut)):
                 return True
         return False
 

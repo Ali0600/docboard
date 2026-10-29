@@ -246,7 +246,7 @@ class FileResult:
     proposals: tuple[Proposal, ...] = ()
     proposal_tasks: tuple[tuple[str, str], ...] = ()  # (tool use id, the task id it got)
     dismissed: tuple[str, ...] = ()  # task ids dismissed
-    started: tuple[str, ...] = ()  # task ids a later start_session started by their id
+    started: tuple[tuple[str, str], ...] = ()  # (tool use id, the task id it started)
 
 
 @dataclass
@@ -267,7 +267,7 @@ class Scan:
     proposals: dict[str, Proposal] = field(default_factory=dict)
     proposal_tasks: dict[str, str] = field(default_factory=dict)  # tool use id -> task id
     dismissed: set[str] = field(default_factory=set)  # task ids
-    started: set[str] = field(default_factory=set)  # task ids started by their id
+    started: dict[str, str] = field(default_factory=dict)  # tool use id -> task id it started
     humans: dict[tuple[str, str], HumanTurn] = field(default_factory=dict)
     touches: dict[tuple[str, str], Touch] = field(default_factory=dict)
     titles: dict[str, str] = field(default_factory=dict)
@@ -438,7 +438,7 @@ class _FileScan:
         self.proposals: list[Proposal] = []
         self.proposal_tasks: list[tuple[str, str]] = []
         self.dismissed: list[str] = []
-        self.started: list[str] = []
+        self.started: list[tuple[str, str]] = []
 
     def line(self, raw: bytes) -> None:
         if self.want_cwds:
@@ -567,7 +567,7 @@ class _FileScan:
                 )  # fmt: skip
             )
         elif name == START_SESSION and isinstance(args.get("proposal_id"), str):
-            self.started.append(args["proposal_id"][:60])  # a proposal started by its id
+            self.started.append((tid, args["proposal_id"][:60]))  # a proposal started by id
         elif name == DISMISS_TASK and isinstance(args.get("task_id"), str):
             self.dismissed.append(args["task_id"][:60])
         elif name in FILE_TOOLS:
@@ -754,7 +754,7 @@ def _merge(scan: Scan, fr: FileResult, order: dict[str, tuple]) -> None:
         _keep(scan.proposals, prop.id, prop, starts)
     scan.proposal_tasks.update(fr.proposal_tasks)
     scan.dismissed.update(fr.dismissed)
-    scan.started.update(fr.started)
+    scan.started.update(fr.started)  # (tool use id, task id) pairs
 
 
 def scan_all(
