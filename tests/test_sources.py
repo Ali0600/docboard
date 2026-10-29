@@ -572,6 +572,8 @@ def test_do_it_here_matches_the_title_as_the_app_writes_it(tmp_path: Path) -> No
         f.human(S, "h2", "2026-10-25T11:01:00Z", "Do this task here: “Keep the 'sky' lit”"),
         f.human(S, "h3", "2026-10-25T11:02:00Z",
                 "Do this task here: “" + long[:200] + "…”\n\nand then more"),
+        # a short title cut by hand is no cut of the app's: it starts nothing
+        f.human(S, "h4", "2026-10-25T11:03:00Z", "Do this task here: “Still…”"),
     ]  # fmt: skip
     assert ideas(derived(tmp_path, recs)) == ["ss:t4"]
 
@@ -710,7 +712,7 @@ def test_a_range_whose_first_end_is_no_pr_is_not_filled_in() -> None:
 
 def test_a_hash_inside_a_word_or_a_url_is_no_pr() -> None:
     refs = docsrc.milestone_refs(
-        "- x: see https://h.example/y#74 and abc#75; ok (#76).\n", {74, 75, 76}
+        "- x: see https://h.example/#74 and build v2#75; ok (#76).\n", {74, 75, 76}
     )
     assert sorted(refs) == [76]
 

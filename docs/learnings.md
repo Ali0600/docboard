@@ -2,6 +2,19 @@
 
 Teachable things that came up building docboard. Newest first.
 
+### Text another program writes is matched against its generator, not its samples
+
+The board drops a proposal the owner started with "Do it here", which the app sends as a turn
+naming the proposal's title. Every sample matched the title exactly, but the app's own bundle
+maps each quotation mark in a title to `'` and cuts it at 200 characters, so any title with a
+quote or over that length would never have matched.
+
+**Why it came up:** a reviewer read the template and the title function out of the desktop
+app's bundle while checking a regex that only samples had shaped.
+
+**Takeaway:** when you parse what another program generates, find its template and the
+normalisation it applies (a bundle, a source file, a doc), and apply the same to your side.
+
 ### `gh run list --branch main` also lists runs that never tested main
 
 GitHub's branch filter matches a run's head branch. A pull request from someone's fork whose own
