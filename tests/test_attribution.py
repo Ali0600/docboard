@@ -57,3 +57,18 @@ def test_an_alias_shared_by_two_sub_projects_is_refused() -> None:
 def test_aliases_for_an_unknown_sub_project_are_refused() -> None:
     with pytest.raises(ConfigError, match="unknown"):
         Attributor.build("games", ["a"], {}, {"z": ("Zed",)}, {})
+
+
+def test_an_agent_prefixed_branch_matches() -> None:
+    a = att()
+    assert a.by_branch("codex/neon-breakers-city") == "neon-breakers"
+    assert a.by_branch("claude/game/pog-store") == "plus-one"
+    assert a.by_branch("codex/unrelated-work") is None
+    assert a.by_branch("main") is None
+
+
+def test_how_many_sub_projects_a_change_spans() -> None:
+    a = att()
+    paths = ["games/plus-one/a", "games/neon-runner/b", "libs/x", "games/plus-one/c"]
+    assert a.spread(paths) == 2
+    assert a.spread([*paths, "games/neon-breakers/d"]) == 3

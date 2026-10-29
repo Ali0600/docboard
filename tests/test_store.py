@@ -451,3 +451,33 @@ def test_raised_at_reaches_the_board_view(store: Store) -> None:
     store.apply(result([again]), now())
     row = store.card("ny:1")
     assert row["raised_at"] == again.raised_at and row["event_at"] == again.event_at
+
+
+# --- PR B: cards in the right place ---------------------------------------------------------
+
+
+def test_a_second_bullet_with_the_same_title_does_not_take_the_move(store: Store) -> None:
+    store.apply(
+        result([card("bl:a", "ideas", title="Sky", body="a blue sky over the city")]), now()
+    )
+    store.move("bl:a", "next", now())
+    # A second "Sky" bullet salts both ids; the new one comes first in the sync.
+    newcomer = card("bl:c", "ideas", title="Sky", body="lanterns and a fair in the square")
+    original = card("bl:b", "ideas", title="Sky", body="a blue sky over the city")
+    store.apply(result([newcomer, original]), now())
+    assert (col(store, "bl:b"), col(store, "bl:c")) == ("next", "ideas")
+
+
+def test_a_renamed_and_ticked_item_drops_the_stale_move(store: Store) -> None:
+    store.apply(
+        result([card("rm:a", "next", kind="roadmap", title="Ship the reward cards")]), now()
+    )
+    store.dismiss("rm:a", now())
+    ticked = card("rm:b", "done", kind="roadmap", title="Ship the reward cards now")
+    store.apply(result([ticked]), now())
+    assert col(store, "rm:b") == "done"
+    assert store.db.execute("SELECT COUNT(*) FROM override").fetchone()[0] == 0
+    assert "no longer applies" in store.events("rm:b")[0]["detail"]
+    store.apply(result([card("rm:b", "next", kind="roadmap", title="Ship the reward cards now")]),
+                now())  # fmt: skip
+    assert col(store, "rm:b") == "next"  # unticked: the old dismissal does not come back
