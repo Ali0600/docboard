@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -175,7 +176,12 @@ def test_board_in_an_unconfigured_folder_prints_a_stanza(
     (repo / "src").mkdir(parents=True)
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     conf = tmp_path / "p.toml"
-    conf.write_text(f'[[project]]\npath = "{tmp_path / "other"}"\nname = "other"\n')
+    conf.write_text(f"[[project]]\npath = '{tmp_path / 'other'}'\nname = \"other\"\n")
     assert cli.main(["board", "--config", str(conf), "--cwd", str(repo / "src"), "--no-sync"]) == 2
-    out = capsys.readouterr().out
-    assert f'[[project]]\npath = "{repo.resolve()}"' in out
+    stanza = capsys.readouterr().out.split("  as:\n", 1)[1]
+    assert tomllib.loads(stanza) == {"project": [{"path": str(repo.resolve())}]}
+
+
+def test_the_stanza_is_valid_toml_for_any_path() -> None:
+    for path in ("D:\\code\\repo", "/srv/it's here", '/srv/"quoted"'):
+        assert tomllib.loads(cli.stanza(Path(path))) == {"project": [{"path": str(Path(path))}]}

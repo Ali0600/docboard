@@ -189,6 +189,14 @@ def _report(project: config.Project, result: sync.SyncResult, report: ApplyRepor
         print(f"  DEGRADED {d} (kept the last good {', '.join(report.kept_frozen)} cards)")
 
 
+def stanza(path: Path) -> str:
+    """A config entry for a folder, valid TOML for any path: a literal string (no escapes, so a
+    Windows path reads as written) unless the path holds a single quote."""
+    text = str(path)
+    value = f"'{text}'" if "'" not in text else json.dumps(text)
+    return f"[[project]]\npath = {value}"
+
+
 def _board(args: argparse.Namespace) -> int:
     cfg = config.load(Path(args.config) if args.config else None)
     cwd = Path(args.cwd) if args.cwd else Path.cwd()
@@ -199,7 +207,7 @@ def _board(args: argparse.Namespace) -> int:
         print(f"board: {cwd} is in none of the configured projects ({names}); add it to {where}")
         top = locate.git_top(cwd)
         if top is not None:  # the folder's own repo, nothing read from its tree
-            print(f'  as:\n[[project]]\npath = "{top}"')
+            print(f"  as:\n{stanza(top)}")
         return 2
     project, sub = found.project, found.sub
     status = 0
