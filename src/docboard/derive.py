@@ -26,6 +26,7 @@ RECENT = timedelta(days=14)
 PLAN_OLDER = timedelta(days=7)
 SESSION_IDLE = timedelta(hours=24)
 CROSS_SESSION_SAME = 0.8
+REPO_WIDE = 3  # a PR whose files span this many sub-projects is the project's, not one game's
 BODY_CAP = 8192
 
 _H1 = re.compile(r"^#\s+(.+?)\s*$", re.M)
@@ -238,7 +239,8 @@ class _Deriver:
             if doc.sub:
                 sub, reason = doc.sub, "path"
             else:
-                sub = self.att.by_text(item.section + " " + item.text)
+                # A checklist's own title names its game under any of its sections.
+                sub = self.att.by_text(" ".join((item.title, item.section, item.text)))
                 sub, reason = (sub, "title") if sub else ("", "root")
             self.cards.append(
                 Card(
@@ -289,6 +291,7 @@ class _Deriver:
                 sub_reason=reason,
                 body=call.plan[:BODY_CAP],
                 event_at=call.ts,
+                older=_t(call.ts) < self.inp.now - RECENT,
                 badges=["waiting for approval"],
                 source={"session": call.session},
             )
@@ -327,11 +330,12 @@ class _Deriver:
             if not sub:
                 sub, reason = self.att.by_branch(pr.head_ref), "branch"
             if not sub:
-                sub, reason = (
-                    self.att.by_files(self.inp.squash.get(pr.number, ()), min_hits=1),
-                    "files",
-                )
-            if not sub:
+                files = self.inp.squash.get(pr.number, ())
+                if self.att.spread(files) >= REPO_WIDE:
+                    sub, reason = "", "repo-wide"  # a move across games: the project's own work
+                else:
+                    sub, reason = self.att.by_files(files, min_hits=1), "files"
+            if not sub and reason != "repo-wide":
                 sub, reason = "", "root"
             card = Card(
                 id=cid,
@@ -510,6 +514,7 @@ class _Deriver:
                         sub_reason=reason,
                         body="\n".join(q.questions),
                         event_at=q.ts,
+                        older=at < self.inp.now - RECENT,
                         badges=["waiting for an answer"],
                         source={"session": q.session},
                     )

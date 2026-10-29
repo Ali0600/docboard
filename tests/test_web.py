@@ -329,3 +329,32 @@ def test_confirm_with_nothing_older_shows_the_list(env: tuple[TestClient, Path])
     client.post("/p/demo/triage", data={"action": "resolve", "ids": ["ny:old"]}, headers=SAME)
     page = client.get("/p/demo/triage?confirm=older").text
     assert "Resolve these 0" not in page and 'value="ny:1"' in page
+
+
+def test_a_plan_file_outside_the_plans_folder_is_not_shown(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    claude = tmp_path / "claude"
+    cfg = Config(projects=(Project(name="demo", path=repo),), claude_home=claude)
+    db = tmp_path / "data" / "board.db"
+    inside, outside = str(claude / "plans" / "a-plan.md"), "/etc/hosts"
+    plans = [
+        card("pl:1", "next", kind="plan", source={"plan_file": inside}),
+        card("pl:2", "next", kind="plan", source={"plan_file": outside}),
+    ]
+    with Store(db) as s:
+        s.apply(result(plans), now())
+    client = TestClient(create_app(cfg, db, PORT), base_url=BASE, follow_redirects=False)
+    assert "a-plan.md" in client.get("/i/pl:1").text
+    assert "/etc/hosts" not in client.get("/i/pl:2").text
+
+
+def test_a_plan_file_must_sit_inside_the_plans_folder() -> None:
+    from docboard.web import _inside
+
+    plans = Path("/" + "srv/claude/plans")
+    assert _inside(str(plans / "a.md"), plans)
+    for outside in (plans / ".." / "secret.md", plans.parent / "x.md",
+                    Path(str(plans) + "-evil") / "x.md"):  # fmt: skip
+        assert not _inside(str(outside), plans), outside
+    assert not _inside("bad\0path", plans)  # a path the OS refuses reads as outside

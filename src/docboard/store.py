@@ -547,30 +547,52 @@ class Store:
     def _renames(self, vanished: list, fresh: list, now: str, report: ApplyReport) -> None:
         """A reworded doc item is the same card: carry the owner's moves over to its new id."""
         db = self.db
-        taken: set[str] = set()
-        for old in vanished:
-            best, score = None, 0.0
-            if old["kind"] in DOC_KINDS:
-                for new in fresh:
-                    if new.kind != old["kind"] or new.id in taken:
-                        continue
-                    s = jaccard(old["title"], new.title)
-                    if s >= RENAME_SAME and s > score:
-                        best, score = new, s
+        # Every (vanished, fresh) pair scored at once and matched best first, so when two
+        # bullets share a title the one whose text also matches wins, whichever comes first.
+        pairs = []
+        for i, old in enumerate(vanished):
+            if old["kind"] not in DOC_KINDS:
+                continue
+            for j, new in enumerate(fresh):
+                if new.kind != old["kind"]:
+                    continue
+                s = jaccard(old["title"], new.title)
+                if s >= RENAME_SAME:
+                    pairs.append(((s, jaccard(old["body"] or "", new.body or "")), i, j))
+        pairs.sort(key=lambda p: (p[0], -p[1], -p[2]), reverse=True)
+        match: dict[int, tuple[object, tuple[float, float]]] = {}
+        taken: set[int] = set()
+        for key, i, j in pairs:
+            if i not in match and j not in taken:
+                match[i] = (fresh[j], key)
+                taken.add(j)
+        for i, old in enumerate(vanished):
+            best, key = match.get(i, (None, None))
             if best is not None:
-                taken.add(best.id)
+                score = key[0]
                 db.execute(
                     "INSERT OR REPLACE INTO alias (old_id, new_id, similarity, at)"
                     " VALUES (?, ?, ?, ?)",
                     (old["id"], best.id, score, now),
                 )
+                detail = f"was {old['title'][:120]!r}"
+                ov = db.execute("SELECT * FROM override WHERE card_id = ?", (old["id"],)).fetchone()
+                if ov is not None and ov["col_derived_when_set"] != best.column:
+                    # Reworded and moved by its source at once: like any source move, it drops
+                    # the owner's move rather than carry it over to wait for a later undo.
+                    db.execute("DELETE FROM override WHERE card_id = ?", (old["id"],))
+                    detail += (
+                        f"; its source also moved it {ov['col_derived_when_set']} → {best.column},"
+                        f" so your move to {ov['col']} no longer applies"
+                    )
+                    report.followed_source += 1
                 for table in ("override", "sub_override"):
                     db.execute(
                         f"UPDATE OR IGNORE {table} SET card_id = ? WHERE card_id = ?",  # noqa: S608
                         (best.id, old["id"]),
                     )
                 db.execute("UPDATE event SET card_id = ? WHERE card_id = ?", (best.id, old["id"]))
-                self._event(now, "sync", best.id, "renamed", f"was {old['title'][:120]!r}")
+                self._event(now, "sync", best.id, "renamed", detail)
                 db.execute("DELETE FROM card WHERE id = ?", (old["id"],))
                 report.renamed += 1
             else:

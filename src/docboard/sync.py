@@ -86,18 +86,34 @@ def collect(cfg: Config, project: Project, now: datetime, gh: str | None = None)
         base = f"{att.parent}/{slug}"
         doc_roots.append(DocFile(f"{base}/docs/DECISIONS.md", slug))
         roadmaps += [DocFile(f"{base}/ROADMAP.md", slug), DocFile(f"{base}/docs/ROADMAP.md", slug)]
-    backlog, roadmap = [], []
+    backlog, roadmap, checklist = [], [], []
     decision_files = roadmap_files = 0
     for doc in doc_roots:
         text = repo.read(doc.path)
         if text is not None:
             decision_files += 1
-            backlog.extend((doc, b) for b in docsrc.parse_backlog(text))
+            bullets = docsrc.parse_backlog(text)
+            starts = docsrc.backlog_starts(text)
+            if starts != len(bullets):
+                warnings.append(
+                    f"{doc.path}: {starts} Backlog bullets start but {len(bullets)} were read"
+                )
+            backlog.extend((doc, b) for b in bullets)
     for doc in roadmaps:
         text = repo.read(doc.path)
         if text is not None:
             roadmap_files += 1
             roadmap.extend((doc, i) for i in docsrc.parse_roadmap(text))
+    folders = [("docs/checklists", "")] + [
+        (f"{att.parent}/{slug}/docs/checklists", slug) for slug in att.slugs
+    ]
+    for folder, sub in folders:
+        for path in repo.files(folder):
+            if not path.endswith(".md") or "/" in path[len(folder) + 1 :]:
+                continue  # the folder's own files only (not data/ beside them)
+            text = repo.read(path)
+            if text is not None:
+                checklist.extend((DocFile(path, sub), i) for i in docsrc.parse_checklist(text))
     timings["docs"] = time.monotonic() - t0
 
     t1 = time.monotonic()
@@ -124,7 +140,7 @@ def collect(cfg: Config, project: Project, now: datetime, gh: str | None = None)
             github=github,
             attributor=att,
             backlog=backlog,
-            roadmap=roadmap,
+            roadmap=roadmap + checklist,
             prs=prs,
             squash=squash,
             scan=scan,
@@ -139,6 +155,7 @@ def collect(cfg: Config, project: Project, now: datetime, gh: str | None = None)
         "backlog": len(backlog),
         "roadmap_files": roadmap_files,
         "roadmap": len(roadmap),
+        "checklist_items": len(checklist),
         "prs": len(prs),
         "prs_merged": states["merged"],
         "prs_open": states["open"],
@@ -186,7 +203,10 @@ def collect(cfg: Config, project: Project, now: datetime, gh: str | None = None)
 
 
 # Sources that never shrink to nothing in a working project; a drop means a parser broke.
-FLOOR_KEYS = ("backlog", "prs_merged", "transcript_files", "plan_calls", "needs_items")
+FLOOR_KEYS = (
+    "backlog", "decision_files", "roadmap", "prs_merged", "transcript_files", "plan_calls",
+    "needs_items",
+)  # fmt: skip
 # Counts that come from gh: while gh is down they are zero for want of an answer, not because
 # a parser broke, so a degraded sync skips them (and its PR and plan cards stay frozen).
 GH_FLOOR_KEYS = ("prs_merged",)

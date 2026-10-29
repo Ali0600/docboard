@@ -302,3 +302,81 @@ def test_dry_run_goes_on_past_a_broken_project(
     assert cli.main(["sync", "--dry-run", "--config", str(conf)]) == 1
     out = capsys.readouterr().out
     assert "broken: FAILED" in out and "demo: docs at" in out
+
+
+# --- PR B: cards in the right place ---------------------------------------------------------
+
+
+def test_squash_files_uses_the_squash_not_a_later_citing_commit(tmp_path: Path) -> None:
+    from docboard.gitrepo import Repo
+
+    repo = make_repo(tmp_path, {"games/alpha/a.luau": "a", "games/alpha/b.luau": "b"})
+    (repo / "games/alpha/a.luau").write_text("a2")
+    git(repo, "commit", "-q", "-am", "Alpha's rewards (#5)")
+    (repo / "docs").mkdir()
+    (repo / "docs/MILESTONES.md").write_text("- rewards (#5)\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "Milestones: the rewards (#5)")  # a later docs commit cites it
+    assert Repo.open(repo, "HEAD").squash_files()[5] == ["games/alpha/a.luau"]
+
+
+CHECKS = "# Alpha Game: going public\n\n- [ ] **1. Look.** At it.\n- [x] **2. Badges.**\n"
+
+
+def test_checklist_steps_become_cards_under_their_game(tmp_path: Path) -> None:
+    repo = make_repo(
+        tmp_path,
+        {
+            "docs/DECISIONS.md": BACKLOG,
+            "docs/checklists/launch.md": CHECKS,
+            "docs/checklists/plain.md": "# A procedure\n\n1. Do this.\n2. Then that.\n",
+            "games/alpha/game.toml": 'name = "Alpha Game"\n',
+            "games/alpha/docs/checklists/release.md": "# Release\n\n- [ ] Tag it.\n",
+        },
+    )
+    got = run(tmp_path, repo)
+    steps = sorted(
+        (c.title, c.column, c.sub, c.badges[0]) for c in got.cards if c.kind == "roadmap"
+    )
+    assert steps == [
+        ("**1. Look.** At it.", "next", "alpha", "Alpha Game: going public"),
+        ("**2. Badges.**", "done", "alpha", "Alpha Game: going public"),
+        ("Tag it.", "next", "alpha", "Release"),
+    ]
+    assert got.counts["checklist_items"] == 3
+
+
+def test_floors_guard_the_docs_too() -> None:
+    base = {"roadmap": 54, "decision_files": 9}
+    assert sync.floor_problems({"roadmap": 0, "decision_files": 9}, base) == ["roadmap: 54 → 0"]
+    assert sync.floor_problems({"roadmap": 54, "decision_files": 2}, base) == [
+        "decision_files: 9 → 2 (more than half gone)"
+    ]
+
+
+def test_a_backlog_bullet_the_parser_lost_is_warned_about(tmp_path: Path) -> None:
+    lost = "# D\n\n## Backlog — later\n\n- **Fine**: x.\n- **Never closed\n- **Also fine**: y.\n"
+    repo = make_repo(tmp_path, {"docs/DECISIONS.md": lost})
+    got = run(tmp_path, repo)
+    assert any("3 Backlog bullets start but 2 were read" in w for w in got.warnings)
+
+
+def test_a_checklist_step_under_a_section_keeps_its_game(tmp_path: Path) -> None:
+    text = (
+        "# Alpha Game: going public\n\n- [ ] **1. Look.**\n\n## After going public\n\n"
+        "- [ ] **2. Post the codes.**\n"
+    )
+    repo = make_repo(
+        tmp_path,
+        {
+            "docs/DECISIONS.md": BACKLOG,
+            "docs/checklists/launch.md": text,
+            "docs/checklists/data/extra.md": "# Alpha Game\n\n- [ ] not read\n",
+            "docs/checklists/notes.txt": "- [ ] not read either\n",
+            "games/alpha/game.toml": 'name = "Alpha Game"\n',
+        },
+    )
+    got = run(tmp_path, repo)
+    steps = sorted((c.title, c.sub) for c in got.cards if c.kind == "roadmap")
+    assert steps == [("**1. Look.**", "alpha"), ("**2. Post the codes.**", "alpha")]
+    assert got.counts["checklist_items"] == 2

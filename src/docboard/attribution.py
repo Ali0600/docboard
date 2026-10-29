@@ -78,12 +78,24 @@ class Attributor:
         return hit.pop() if len(hit) == 1 else None
 
     def by_branch(self, branch: str) -> str | None:
+        """The sub-project whose branch prefix the branch starts with, the longest one winning.
+        An agent's own prefix (`codex/`, `claude/`) is looked past when nothing matches."""
+        found = self._by_branch(branch)
+        if found is None and "/" in branch:
+            found = self._by_branch(branch.split("/", 1)[1])
+        return found
+
+    def _by_branch(self, branch: str) -> str | None:
         best: tuple[int, str] | None = None
         for slug in self.slugs:
             for prefix in self.branches.get(slug, ()):
                 if branch.startswith(prefix) and (best is None or len(prefix) > best[0]):
                     best = (len(prefix), slug)
         return best[1] if best else None
+
+    def spread(self, paths: Iterable[str]) -> int:
+        """How many sub-projects the paths touch."""
+        return len({s for s in (self.by_path(p) for p in paths) if s})
 
     def by_files(self, paths: Iterable[str], min_hits: int = VOTE_MIN_HITS) -> str | None:
         """The sub-project owning at least 60% of the files, and at least `min_hits` of them."""

@@ -44,9 +44,13 @@ board older than two minutes refreshes itself in the background; "Sync now" does
 
 - **Docs** (`docsrc.py`, `gitrepo.py`) are read from the blobs at `origin/main` (or `docs_ref`),
   never a working tree another session may be using: the root `docs/DECISIONS.md` and each
-  sub-project's `docs/DECISIONS.md`, and `ROADMAP.md` at either level.
+  sub-project's `docs/DECISIONS.md` (a bold title may wrap; a bullet the parser cannot read is
+  warned about), `ROADMAP.md` at either level, and the `- [ ]` steps of `docs/checklists/*.md`,
+  each under its file's title.
 - **Pull requests** (`ghsrc.py`) through `gh`; a failure shows as "degraded", never as no PRs.
-  A PR belongs to the game its title names, else its branch prefix, else most of its files.
+  A PR belongs to the game its title names, else its branch prefix (an agent's own `codex/` or
+  `claude/` looked past), else most of the files of its squash commit; a PR touching three or more
+  games is the project's own ("repo-wide").
 - **Transcripts** (`transcripts.py`) are the project's `~/.claude/projects/` folders, its
   worktrees' included. Each line is checked with byte substrings before any JSON is parsed. Items
   come only from main-session assistant text and tool calls, never from tool results, which can

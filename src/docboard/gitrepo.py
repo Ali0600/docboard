@@ -94,7 +94,10 @@ class Repo:
         return file.read_text(encoding="utf-8", errors="replace")
 
     def squash_files(self) -> dict[int, list[str]]:
-        """PR number → files, for commits whose subject ends in "(#N)" (squash merges)."""
+        """PR number → files, for commits whose subject ends in "(#N)" (squash merges).
+
+        The oldest such commit is the squash itself; later ones citing the PR (a Milestones line,
+        a follow-up) would give the wrong files."""
         rev = self.ref or "HEAD"
         out = self._run("log", rev, "--name-only", "--format=%x1e%s").decode("utf-8", "replace")
         result: dict[int, list[str]] = {}
@@ -104,7 +107,7 @@ class Repo:
                 continue
             m = _SQUASH.search(lines[0])
             if m:
-                result.setdefault(int(m.group(1)), lines[1:])
+                result[int(m.group(1))] = lines[1:]  # the log is newest first: the oldest wins
         return result
 
     def github_slug(self) -> str | None:
