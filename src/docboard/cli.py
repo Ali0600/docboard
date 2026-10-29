@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import traceback
 from collections import Counter
@@ -191,10 +192,22 @@ def _report(project: config.Project, result: sync.SyncResult, report: ApplyRepor
 
 def stanza(path: Path) -> str:
     """A config entry for a folder, valid TOML for any path: a literal string (no escapes, so a
-    Windows path reads as written) unless the path holds a single quote."""
+    Windows path reads as written) unless the path holds a single quote or a control character;
+    then a basic string with those escaped."""
     text = str(path)
-    value = f"'{text}'" if "'" not in text else json.dumps(text)
+    if "'" not in text and not _TOML_CONTROL.search(text):
+        value = f"'{text}'"
+    else:
+        value = '"' + _TOML_ESCAPE.sub(lambda m: _toml_escape(m.group()), text) + '"'
     return f"[[project]]\npath = {value}"
+
+
+_TOML_CONTROL = re.compile("[\x00-\x08\x0a-\x1f\x7f]")  # TOML's literal strings allow a tab
+_TOML_ESCAPE = re.compile('[\x00-\x1f\x7f"\\\\]')
+
+
+def _toml_escape(ch: str) -> str:
+    return {'"': '\\"', "\\": "\\\\"}.get(ch) or f"\\u{ord(ch):04x}"
 
 
 def _board(args: argparse.Namespace) -> int:

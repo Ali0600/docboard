@@ -12,11 +12,12 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import cache
+from itertools import takewhile
 
 from docboard import ids
 from docboard.attribution import Attributor
 from docboard.docsrc import Bullet, RoadmapItem
-from docboard.ghsrc import RED, PullRequest, Run
+from docboard.ghsrc import RED, PullRequest, Run, decisive
 from docboard.route import Router
 from docboard.textsim import jaccard, similar
 from docboard.transcripts import PlanCall, Scan, Touch
@@ -48,6 +49,10 @@ _HAND_CHECK = re.compile(
     r"^(#{1,6})\s[^\n]*\bhand[- ]?checks?\b[^\n]*$", re.IGNORECASE | re.MULTILINE
 )
 _ANY_HEADING = re.compile(r"^(#{1,6})\s", re.MULTILINE)
+_FENCE = re.compile(r"^ {0,3}(```|~~~)")
+# The app's "Do it here" on a proposal card sends this as the owner's turn in its session.
+_DO_HERE = re.compile(r"^\s*Do this task here: [\u201c\"](.+?)[\u201d\"]")
+PROPOSAL_LIFE = timedelta(days=7)  # the app drops a proposal card not started in a week
 
 
 @dataclass
@@ -100,14 +105,31 @@ class Inputs:
     refused_runs: dict[int, bool] = field(default_factory=dict)  # red run id -> never ran
 
 
+def _unfenced(text: str) -> str:
+    """The text with every fenced code block blanked (same length, so offsets still match): a
+    `# comment` in a shell block is not a heading."""
+    out, inside = [], False
+    for line in text.splitlines(keepends=True):
+        fence = _FENCE.match(line) is not None
+        if inside or fence:
+            line = "".join(c if c in "\r\n" else " " for c in line)
+        out.append(line)
+        if fence:
+            inside = not inside
+    return "".join(out)
+
+
 def hand_check(body: str) -> str:
-    """A PR description's "Hand check" section (to the next heading of its level or above)."""
-    m = _HAND_CHECK.search(body or "")
+    """A PR description's "Hand check" section (to the next heading of its level or above),
+    headings inside code fences not counting."""
+    body = body or ""
+    plain = _unfenced(body)
+    m = _HAND_CHECK.search(plain)
     if m is None:
         return ""
     level = len(m.group(1))
     end = len(body)
-    for h in _ANY_HEADING.finditer(body, m.end()):
+    for h in _ANY_HEADING.finditer(plain, m.end()):
         if len(h.group(1)) <= level:
             end = h.start()
             break
@@ -846,14 +868,21 @@ class _Deriver:
             self.cards.append(card)
 
     def proposals(self) -> None:
-        """Sessions the assistant proposed on its own, as Ideas until their task is dismissed."""
+        """Sessions the assistant proposed on its own, as Ideas while the proposal stands. It
+        leaves once dismissed, started (by its id, or by the owner's "Do it here") or a week old,
+        when the app drops it. A call that proposed nothing (no task id came back) is no card."""
         scan = self.inp.scan
         for prop in scan.proposals.values():
             task = scan.proposal_tasks.get(prop.id)
-            if task is not None and task in scan.dismissed:
+            if task is None or task in scan.dismissed or task in scan.started:
                 continue
             at = _t(prop.ts)
-            sub, reason = self._transcript_sub(prop.session, at, prop.title, prop.prompt)
+            if self.inp.now - at > PROPOSAL_LIFE or self._done_here(prop.session, at, prop.title):
+                continue
+            # The prompt's first paragraph only: a path deep in its instructions is no claim on
+            # a game or a board.
+            lead = prop.prompt.split("\n\n", 1)[0]
+            sub, reason = self._transcript_sub(prop.session, at, prop.title, lead)
             card = Card(
                 id=ids.proposal_id(prop.id),
                 kind="proposal",
@@ -864,32 +893,34 @@ class _Deriver:
                 body=prop.prompt,
                 event_at=prop.ts,
                 badges=["proposed session"],
-                source={"session": prop.session, "task": task or ""},
+                source={"session": prop.session, "task": task},
             )
-            self._own(
-                card, self._ask_owner(prop.session, at, prop.title, prop.prompt), prop.session
-            )
+            self._own(card, self._ask_owner(prop.session, at, prop.title, lead), prop.session)
             self.cards.append(card)
+
+    def _done_here(self, session: str, at: datetime, title: str) -> bool:
+        """Whether the owner started a proposal from its card ("Do it here") in its session."""
+        for h in self.humans.get(session, ()):
+            m = _DO_HERE.match(h.text)
+            if m and _t(h.ts) > at and m.group(1).strip() == title.strip():
+                return True
+        return False
 
     def ci(self) -> None:
         """Each workflow whose newest run on the default branch is red is a card in In progress;
-        once a later run is green it moves to Done. A workflow never red here has no card."""
+        once a later run is green it moves to Done, dated when it turned green. Only a success
+        is green; a cancelled or skipped run says nothing. A workflow never red here has no card."""
         by_workflow: dict[str, list[Run]] = defaultdict(list)
-        for run in self.inp.runs:
-            if run.status == "completed" and run.conclusion not in ("cancelled", "skipped", ""):
-                by_workflow[run.workflow].append(run)
+        for run in decisive(self.inp.runs):  # newest first
+            by_workflow[run.workflow].append(run)
         for workflow, runs in sorted(by_workflow.items()):
-            runs.sort(key=lambda r: (_t(r.created_at), r.id), reverse=True)
-            if not any(r.conclusion in RED for r in runs):
+            first_red = next((i for i, r in enumerate(runs) if r.conclusion in RED), None)
+            if first_red is None:
                 continue
             newest = runs[0]
             repo = newest.repo
-            if newest.conclusion in RED:
-                streak = []
-                for r in runs:
-                    if r.conclusion not in RED:
-                        break
-                    streak.append(r)
+            if first_red == 0:
+                streak = list(takewhile(lambda r: r.conclusion in RED, runs))
                 refused = self.inp.refused_runs.get(newest.id, False)
                 badges = [f"red since {streak[-1].created_at[:10]}", f"{len(streak)} red runs"]
                 if refused:
@@ -901,7 +932,8 @@ class _Deriver:
                 )
             else:
                 badges, column = ["green again"], DONE
-                event_at, title = newest.created_at, f"main is green again: {workflow}"
+                event_at = runs[first_red - 1].created_at  # the run that turned it green
+                title = f"main is green again: {workflow}"
             self.cards.append(
                 Card(
                     id=ids.ci_id(repo, workflow),

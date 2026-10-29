@@ -162,8 +162,40 @@ def parse_roadmap(text: str, title_section: bool = False) -> list[RoadmapItem]:
 
 
 _MS_BULLET = re.compile(r"^- ")
-# "#162", "#162-#167", "PR #74"; never "game #1" (a game's number in a table or prose).
-_MS_REF = re.compile(r"(?<![\w/])(?<!game )#(\d+)(?:\s*[-–]\s*#(\d+))?", re.IGNORECASE)
+# "(#162)", "#162-#167", "PR #74", "PRs #108 and #110", "after the #263 hand check".
+_MS_REF = re.compile(r"(?<![\w/])#(\d+)(?:\s*[-–]\s*#(\d+))?")
+# A word right before "#N" names whose number it is: these leave it a PR; any other ("game #2",
+# "visual review #24", "issue #9") is that thing's own number.
+_PR_WORDS = frozenset(
+    {
+        "pr",
+        "prs",
+        "and",
+        "or",
+        "the",
+        "then",
+        "also",
+        "plus",
+        "in",
+        "via",
+        "see",
+        "after",
+        "before",
+        "from",
+        "with",
+        "by",
+        "on",
+        "since",
+        "until",
+    }
+)
+_LAST_WORD = re.compile(r"([A-Za-z]+)\s*$")
+
+
+def _a_pr(bullet: str, start: int) -> bool:
+    """Whether the "#N" at `start` stands for a PR, by the word before it (if any)."""
+    m = _LAST_WORD.search(bullet[max(0, start - 30) : start])
+    return m is None or m.group(1).lower() in _PR_WORDS
 
 
 def milestone_bullets(text: str) -> list[str]:
@@ -187,17 +219,20 @@ def milestone_bullets(text: str) -> list[str]:
 
 def milestone_refs(text: str, known: set[int]) -> dict[int, list[str]]:
     """PR number -> the MILESTONES bullets citing it, for the numbers that are this repo's PRs. A
-    range counts only when both of its ends are known PRs."""
+    range is filled in only when both of its ends are known PRs, in order and at most 50 apart;
+    otherwise each end that is a known PR counts on its own."""
     refs: dict[int, list[str]] = {}
     for bullet in milestone_bullets(text):
         cited: set[int] = set()
         for m in _MS_REF.finditer(bullet):
+            if not _a_pr(bullet, m.start()):
+                continue
             a = int(m.group(1))
             b = int(m.group(2)) if m.group(2) else None
             if b is not None and a in known and b in known and a < b <= a + 50:
                 cited.update(n for n in range(a, b + 1) if n in known)
-            elif a in known:
-                cited.add(a)
+            else:
+                cited.update(n for n in (a, b) if n is not None and n in known)
         for n in sorted(cited):
             refs.setdefault(n, []).append(bullet[:BODY_CAP])
     return refs

@@ -78,14 +78,27 @@ def _subprojects(
 
 
 def _newest_red(runs: list[ghsrc.Run]) -> list[ghsrc.Run]:
-    """Each workflow's newest finished run, when it is red (the one its card describes)."""
+    """Each workflow's newest run that says red or green, when it is red: the run its card
+    describes, picked in the card's own order (ghsrc.decisive)."""
     newest: dict[str, ghsrc.Run] = {}
-    for run in runs:
-        if run.status != "completed" or run.conclusion in ("cancelled", "skipped", ""):
-            continue
-        if run.workflow not in newest or run.created_at > newest[run.workflow].created_at:
-            newest[run.workflow] = run
+    for run in ghsrc.decisive(runs):
+        newest.setdefault(run.workflow, run)
     return [r for r in newest.values() if r.conclusion in ghsrc.RED]
+
+
+def _read_ci(github: str, gh: str, runs: list[ghsrc.Run], refused: dict[int, bool],
+             degraded: list[str]) -> None:  # fmt: skip
+    """The default branch's CI runs, into `runs` and `refused`. Its own source: a failure here
+    is a "ci:" entry, which freezes the CI cards and never the PR cards."""
+    try:
+        branch = ghsrc.default_branch(github, gh)
+        got = ghsrc.fetch_runs(github, gh, branch)
+        verdicts = {r.id: ghsrc.refused_before_running(github, gh, r.id) for r in _newest_red(got)}
+    except (ghsrc.GhError, OSError) as e:
+        degraded.append(f"ci: {e}")
+        return
+    runs.extend(got)
+    refused.update(verdicts)
 
 
 def router(cfg: Config) -> Router:
@@ -156,20 +169,20 @@ def collect(cfg: Config, project: Project, now: datetime, gh: str | None = None)
     if github:
         gh = gh or ghsrc.find_gh()
         if gh is None:
-            degraded.append("gh: not installed")
+            degraded += ["gh: not installed", "ci: not read, gh is not installed"]
         else:
+            answered = True
             try:
                 prs = ghsrc.fetch(github, gh)
-            except (ghsrc.GhError, OSError) as e:
+            except (ghsrc.GhUnreachable, OSError) as e:
                 degraded.append(f"gh: {e}")
-            try:  # main's CI: its own source, so a failure here never freezes the PR cards
-                branch = (repo.ref or "main").removeprefix("origin/")
-                runs = ghsrc.fetch_runs(github, gh, branch)
-                for run in _newest_red(runs):
-                    refused[run.id] = ghsrc.refused_before_running(github, gh, run.id)
-            except (ghsrc.GhError, OSError) as e:
-                runs, refused = [], {}
-                degraded.append(f"ci: {e}")
+                answered = False
+            except ghsrc.GhError as e:
+                degraded.append(f"gh: {e}")
+            if not answered:  # asking again would only wait as long again
+                degraded.append("ci: not read, gh did not answer")
+            else:
+                _read_ci(github, gh, runs, refused, degraded)
     squash = repo.squash_files()
     milestones: dict[int, list[str]] = {}
     known = {p.number for p in prs}

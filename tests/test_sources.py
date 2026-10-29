@@ -153,7 +153,8 @@ def test_runs_and_bodies_come_from_gh(tmp_path: Path) -> None:
             "mergedAt": "2026-10-21T00:00:00Z", "closedAt": None, "headRefName": "b",
             "body": HAND}]  # fmt: skip
     runs = [{"databaseId": 9, "workflowName": "ci", "status": "completed",
-             "conclusion": "failure", "createdAt": "2026-10-26T00:00:00Z", "url": "u"}]  # fmt: skip
+             "conclusion": "failure", "createdAt": "2026-10-26T00:00:00Z", "url": "u",
+             "event": "push"}]  # fmt: skip
     jobs = {"jobs": [{"name": "ci", "conclusion": "failure", "steps": []}]}
     body = (
         "args = sys.argv[1:]\n"

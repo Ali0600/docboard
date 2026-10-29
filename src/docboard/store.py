@@ -366,7 +366,7 @@ class Store:
             problems = list(drops.values())
             self._run(result, now, "refused", "; ".join(problems))
             raise FloorError(problems)
-        frozen = {"pr", "plan", "ci"} if gh_down else set()
+        frozen = {"pr", "plan"} if gh_down else set()
         if ci_degraded(result.degraded):
             frozen.add("ci")  # the runs could not be read: keep the CI cards as they were
         report = ApplyReport(kept_frozen=sorted(frozen), accepted=list(accepted.values()))
