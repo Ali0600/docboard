@@ -208,7 +208,8 @@ class ApplyReport:
     duplicates: list[str] = field(default_factory=list)  # ids repeated within this sync
     elsewhere: list[str] = field(default_factory=list)  # ids another board derives too
     adopted: int = 0  # cards moved here from another board
-    reopened: int = 0  # raised again after the owner resolved or dismissed them
+    reopened: int = 0  # raised again after the owner resolved, dismissed or answered them
+    answered: int = 0  # asks the owner answered in chat, moved to Done
     kept_open: int = 0  # open asks whose transcript is gone
     handed_over: int = 0  # cards another board now owns, moved there
 
@@ -515,6 +516,10 @@ class Store:
                     (card.id, row["column_derived"]),
                 ).fetchone()
                 detail = f"source moved it {old['column_derived']} → {row['column_derived']}"
+                answer = card.source.get("answer") if card.kind == "needs" else None
+                if answer and row["column_derived"] == DONE:
+                    detail = f"you answered it in chat: \u201c{answer.get('words', '')}\u201d"
+                    report.answered += 1
                 if gone is not None:
                     detail += f"; your move to {gone['col']} no longer applies"
                     report.followed_source += 1
@@ -558,8 +563,8 @@ class Store:
     def _raised_again(
         self, old: sqlite3.Row, row: dict, card_id: str, now: str, report: ApplyReport
     ) -> None:
-        """A later raise of an ask: it reopens a card the owner resolved or dismissed before it
-        was raised again; otherwise the history notes it."""
+        """A later raise of an ask: it reopens a card the owner resolved, dismissed or answered
+        before it was raised again; otherwise the history notes it."""
         new_at, old_at = _ts(row["raised_at"]), _ts(old["raised_at"] or old["event_at"])
         if new_at is None or (old_at is not None and new_at <= old_at):
             return
@@ -582,6 +587,16 @@ class Store:
             verb = "resolved" if ov["col"] == DONE else "dismissed"
             self._event(
                 now, "sync", card_id, "reopened", f"raised again {when} after you {verb} it"
+            )
+            report.reopened += 1
+        elif old["column_derived"] == DONE and json.loads(old["source"]).get("answer"):
+            # Its source left Done for Needs you: raised again after the owner's answer.
+            self.db.execute(
+                "UPDATE card SET reopened_at = ?, reopened_was = 'answered' WHERE id = ?",
+                (now, card_id),
+            )
+            self._event(
+                now, "sync", card_id, "reopened", f"raised again {when} after you answered it"
             )
             report.reopened += 1
         elif row["raised"] > old["raised"]:
@@ -875,10 +890,7 @@ class Store:
                         (card_id, prev["col"], prev["col_derived_when_set"], prev["set_at"]),
                     )
                 self._event(now, "owner", card_id, "undo", f"undid the {batch['kind']}")
-                card = self.card(card_id)
-                if card["gone_at"] and card["source_gone_at"] and card["col"] == NEEDS_YOU:
-                    # A sync let it go once it was resolved; back in Needs you, it is kept open.
-                    self.db.execute("UPDATE card SET gone_at = NULL WHERE id = ?", (card_id,))
+                self._revive(card_id)
                 restored += 1
             self.db.execute("UPDATE batch SET undone_at = ? WHERE id = ?", (now, batch_id))
         return restored, kept
@@ -902,6 +914,56 @@ class Store:
 
     def dismiss(self, card_id: str, now: str) -> None:
         self.move(card_id, HIDDEN, now, kind="dismiss")
+
+    def restore(self, card_id: str, now: str) -> str:
+        """Undoes a Dismiss: a hidden card goes back to the column you hid it from (its source
+        has not moved it since, or the hide would no longer apply). An ask the owner answered in
+        chat goes back to Needs you instead, as if the answer were not one. Returns the column
+        it is in now."""
+        with self.tx():
+            card = self.card(card_id)
+            if card is None:
+                raise StoreError(f"no card {card_id!r}")
+            if card["col"] == HIDDEN:
+                arrow = f" \u2192 {HIDDEN}"
+                was = next(
+                    (frm for e in self.events(card_id)
+                     if e["actor"] == "owner" and e["detail"].endswith(arrow)
+                     and (frm := e["detail"][: -len(arrow)]) in COLUMNS),
+                    card["column_derived"],
+                )  # fmt: skip
+                self._move(card_id, was, now, "restore")
+            elif card["col"] == DONE and answered(card):
+                self._move(card_id, NEEDS_YOU, now, "not answered")
+            else:
+                raise StoreError("only a hidden card, or an ask you answered, can be restored")
+            self._revive(card_id)
+            return self.card(card_id)["col"]
+
+    def _revive(self, card_id: str) -> None:
+        """An ask the owner puts back in Needs you is on the board again, even if a sync let it
+        go while it was resolved or hidden (its transcript deleted). The next sync keeps it open
+        while its transcript stays gone, and lets it go if its session is read without it."""
+        card = self.card(card_id)
+        if card["gone_at"] and card["kind"] in ASK_KINDS and card["col"] == NEEDS_YOU:
+            self.db.execute("UPDATE card SET gone_at = NULL WHERE id = ?", (card_id,))
+
+    def restore_manual(self, card_id: str, now: str) -> str:
+        """A hidden card you added goes back to the column it was in before (Next if none)."""
+        with self.tx():
+            card = self.manual_card(card_id)
+            if card is None:
+                raise StoreError(f"no card {card_id!r}")
+            if card["col"] != HIDDEN:
+                raise StoreError("only a hidden card can be restored")
+            before = next(
+                (e["detail"] for e in self.events(card_id)
+                 if e["kind"] in ("added", "move") and e["detail"] in COLUMNS),
+                "next",
+            )  # fmt: skip
+            self.db.execute("UPDATE manual SET col = ? WHERE id = ?", (before, card_id))
+            self._event(now, "owner", card_id, "restore", f"{HIDDEN} → {before}")
+            return before
 
     def set_sub(self, card_id: str, sub: str, subs: list[str], now: str) -> None:
         if sub and sub not in subs:
@@ -948,6 +1010,15 @@ class Store:
         with self.tx():
             self.db.execute("UPDATE manual SET deleted_at = ? WHERE id = ?", (now, card_id))
             self._event(now, "owner", card_id, "deleted", "")
+
+
+def answered(card: sqlite3.Row) -> bool:
+    """Whether a stored card is an ask its source moved to Done because the owner answered it."""
+    return (
+        card["kind"] == "needs"
+        and card["column_derived"] == DONE
+        and bool(json.loads(card["source"]).get("answer"))
+    )
 
 
 def backup(db: sqlite3.Connection, db_path: Path, reason: str, now: datetime) -> Path:

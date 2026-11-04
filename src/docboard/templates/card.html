@@ -10,7 +10,7 @@
     {% if card.age %} · {{ card.age }} ago{% endif %}{% if card.raised > 1 %} · raised {{ card.raised }}×{% endif %}
   </p>
   {% if card.badges or card.reopened or card.source_gone %}<div class="badges">
-    {%- if card.reopened %}<span class="badge flag">raised again after you {{ "dismissed" if card.reopened_was == "hidden" else "resolved" }} it</span>{% endif %}
+    {%- if card.reopened %}<span class="badge flag">raised again after you {{ REOPENED.get(card.reopened_was, "resolved") }} it</span>{% endif %}
     {%- if card.source_gone %}<span class="badge">transcript gone: it stays until you act on it</span>{% endif %}
     {%- for b in card.badges %}<span class="badge">{{ b }}</span>{% endfor %}</div>{% endif %}
 
@@ -22,6 +22,10 @@
     {% if card.col == "needs_you" %}
     <form method="post" action="{{ card.href }}/resolve"><button type="submit">Resolve</button></form>
     <form method="post" action="{{ card.href }}/dismiss"><button type="submit">Dismiss</button></form>
+    {% elif card.col == "hidden" %}
+    <form method="post" action="{{ card.href }}/restore"><button type="submit">Restore</button></form>
+    {% elif card.col == "done" and card.answer %}
+    <form method="post" action="{{ card.href }}/restore"><button type="submit">Not answered: back to Needs you</button></form>
     {% endif %}
     {% if not card.manual %}
     <form method="post" action="{{ card.href }}/sub">
@@ -40,10 +44,18 @@
   <ul>{% for d in decided %}<li>{{ d }}</li>{% endfor %}</ul>
   {% endif %}
 
-  {% if evidence %}
+  {% if card.answer %}
+  <h2>Your answer</h2>
+  <p class="evidence">{{ card.answer.words }}</p>
+  <p class="muted">{{ card.answer.at[:16].replace("T", " ") }} UTC, in that session. It moved the card to Done; a later raise brings it back.</p>
+  {% elif evidence %}
   <h2>Your next message in that session</h2>
   <p class="evidence">{{ evidence }}</p>
-  <p class="muted">A hint only: the card stays in Needs you until you resolve or dismiss it.</p>
+  {% if column_derived == "done" %}
+  <p class="muted">The board read a reply as your answer; you put the card back, so it stays until you resolve or dismiss it.</p>
+  {% else %}
+  <p class="muted">A hint only: it did not name this item (an option letter like “do A”, a numbered “1: B”, or “done” for a Do), so the card stays until you answer, resolve or dismiss it.</p>
+  {% endif %}
   {% endif %}
 
   {% if children %}

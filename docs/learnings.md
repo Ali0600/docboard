@@ -2,6 +2,20 @@
 
 Teachable things that came up building docboard. Newest first.
 
+### A rule over free text is calibrated on the real replies, and replayed before it ships
+
+Whether a reply answers an ask is a rule over text people type, and examples written from memory
+miss the shapes that matter. Bucketing the owner's real replies by their opening found that "ok"
+and "yes" mostly start new requests, that a capital letter can be the article ("A window
+opened…"), and that one letter can fit two items of a block.
+
+**Why it came up:** answered Needs-you items were to leave the column by themselves (2026-11-04).
+The survey of 525 blocks set the rules, and a replay over a copy of the live board then caught a
+case no example had: a "do A" meant for one item moved another item folded into the same card.
+
+**Takeaway:** before shipping a rule that reads free text, bucket the real inputs by shape, then
+run the rule over a copy of the real data and read every item it changes, not just the count.
+
 ### On Windows, appends from processes running at once can tear a shared file
 
 A test's fake `gh` logged every call by appending one JSON line to one file. Once the four CI

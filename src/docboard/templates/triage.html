@@ -4,7 +4,8 @@
 {% block main %}
 <h1>Needs you: {{ items|length }}</h1>
 <p class="muted">Everything still in Needs you, newest first. The line under each is your next message in that
-session: a hint only, never applied.</p>
+session. A reply that names the item (an option letter like “do A”, a numbered “1: B”, or “done” for a Do) moves it
+to Done at the next sync by itself; anything else is a hint only.</p>
 <nav class="chips" aria-label="Games">
   <a class="chip{% if not sub %} on{% endif %}" href="{{ url() }}">All</a>
   <a class="chip{% if sub == "_root" %} on{% endif %}" href="{{ url(sub="_root") }}">{{ project.root_name }}</a>
@@ -61,7 +62,7 @@ session: a hint only, never applied.</p>
         <input type="checkbox" name="ids" value="{{ c.id }}"{% if select_all %} checked{% endif %}>
         <a href="{{ c.href }}">{{ c.title|plain }}</a>
       </label>
-      <span class="muted">{{ names.get(c.sub, c.sub) if c.sub else project.root_name }} · {{ c.age }} ago{% if c.raised > 1 %} · raised {{ c.raised }}×{% endif %}{% if c.reopened %} · raised again after you {{ "dismissed" if c.reopened_was == "hidden" else "resolved" }} it{% endif %}</span>
+      <span class="muted">{{ names.get(c.sub, c.sub) if c.sub else project.root_name }} · {{ c.age }} ago{% if c.raised > 1 %} · raised {{ c.raised }}×{% endif %}{% if c.reopened %} · raised again after you {{ REOPENED.get(c.reopened_was, "resolved") }} it{% endif %}</span>
       {% if c.evidence %}<div class="evidence">You said next: {{ c.evidence }}</div>{% endif %}
     </li>
     {% endfor %}

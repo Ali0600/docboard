@@ -2,6 +2,14 @@
 
 ## Backlog — alternatives worth trying later
 
+- **A Do item answered in prose** (2026-11-04, answers in chat): "ok, it is up now", "logged in",
+  "I added the key" answer a Do, but they read like status reports and new requests, so
+  only "done" (or "N. done") answers one today. Revisit hook: `answers._DONE`, checked against
+  every reply in the survey script's output before and after, as on 2026-11-04.
+- **A yes-or-no Decide answered in words** ("yes, add the check", "go with the mixed one"):
+  no letter, so no answer today. Revisit hook: `answers.answered`, matching a reply against the
+  item's own option texts rather than its letters.
+
 - **Stop folding different asks into one card** (2026-10-29, the same-session fold): about 2 of
   the survey's 19 folds join two different asks, and the run's last review counted 2 folds that
   join a Decide with a Do once tweet-extractor and browser-shield are read. A folded ask never
@@ -44,6 +52,53 @@
   and `/board` starts the page for the session when it is down. Revisit hook: a LaunchAgent from
   `uv tool install` with absolute paths, `PATH`, `HOME` and `LANG` set, proved under `env -i`,
   nothing under `~/Documents`.
+
+## 2026-11-04 — An answer in chat moves a Needs-you card; a hidden card can be restored
+
+The owner answered a Needs-you item in its session ("do A") and the card stayed in Needs you, by
+the rule that only the owner's action on the board moves one; dismissing it then sent it to Hidden
+with no way back. The owner asked for both to change.
+- **What counts as an answer** (`answers.py`): a turn the owner typed (no slash or `!` command,
+  nothing the app wrote) that names the item: an option letter it offers ("do A", "A, go ahead",
+  "C) the smaller one"), a numbered line ("1: B"), or "done" for the block's one Do. A letter
+  two items of the block both offer answers neither, unless the reply says "for both"; a letter in
+  a question ("what do A and B cost?") is no answer. *Chosen*, from a survey of the owner's next
+  typed turn after each of 525 Needs-you blocks on the Mac (456 had one): 102 open with "ok",
+  "okay" or "yes", and read by hand they are mostly a new request, a question or a status report
+  (these rules answer 6 of them); 79 open like a pick ("do A", "A, …", "go with B"), and these
+  rules answer 74, leaving the article ("A window opened…"), three letters two items both offer,
+  and a lone "a" to a Do with no options.
+  - **The next owner turn, whatever it says:** *rejected*: it would close most asks on a new
+    request.
+  - **A Do answered in prose, a yes-or-no Decide answered in words:** *deferred* (Backlog).
+- **Which turns can answer:** the owner's typed turns after the raise and before that session's
+  next Needs-you block, in every session holding a copy of it: *chosen*; the survey found real
+  answers after a clarifying question. Only the first 300 characters of a turn are kept
+  (`transcripts.EVIDENCE_CAP`), so an answer deep in a long message is not read and the card
+  stays.
+  - **Only the first turn after the raise:** *rejected*: it misses "What would B cost?" → "then
+    do A".
+- **Where an answered card goes:** Done, the reply quoted on the card and dated by the answer, the
+  way the owner's own Resolve moves it: *chosen*. A raise after the answer reopens it in Needs you
+  ("raised again after you answered it").
+  - **Stay in Needs you with an "answered" badge:** *rejected*: the owner wants it out of Needs
+    you.
+  - **Hidden:** *rejected*: an answer resolves an ask, it does not set it aside.
+- **Two items of one block folded into one card** (the 0.4 word-overlap fold) never lend it each
+  other's answer: *chosen* after the replay below found "do A" for a licence Decide moving the Do
+  it had been folded into. The fold itself is still the Backlog's first item.
+- **Restore:** a button on every hidden card that puts it back in the column it was hidden from
+  (its history records which), and on an answered card one that sends it back to Needs you as the
+  owner's move: *chosen*. Triage's batch undo and Restore both bring back an ask whose transcript
+  was deleted while it was hidden; the next sync keeps it open.
+  - **An undo notice after Dismiss:** *rejected*: Dismiss returns to the card's page, where
+    Restore now is.
+- Replayed on a copy of the live board before shipping: 33 of its 904 cards moved Needs you → Done
+  (6 browser-shield, 2 docboard, 22 roblox-games, 3 tweet-extractor), each read by hand; no card
+  id came or went (`docboard diff --strict`).
+
+Revisit hook: `answers.answered` and `derive._answer` for what answers; `Store.restore` and
+`_revive` for the way back.
 
 ## 2026-10-28 — Small sources: milestones and hand checks on PRs, proposals, main's CI
 
