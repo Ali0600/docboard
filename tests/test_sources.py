@@ -319,13 +319,16 @@ def gh_fake(tmp_path: Path, prs: list[dict] = (), runs: list[dict] = (),
     spec = {"prs": list(prs), "runs": list(runs), "jobs": jobs or {}, "branch": branch,
             "fail": list(fail), "hang": list(hang)}  # fmt: skip
     data.write_text(json.dumps(spec))
-    log = tmp_path / "gh-argv.log"
+    log = tmp_path / "gh-calls"  # one file per call: calls run at once, and on Windows
+    log.mkdir()  # appends to one shared file can tear a line
     body = f"""
-import json
+import json, os
 d = json.load(open({str(data)!r}, encoding="utf-8"))
 args = sys.argv[1:]
-with open({str(log)!r}, "a", encoding="utf-8") as fh:
-    fh.write(json.dumps(args) + "\\n")
+name = os.path.join({str(log)!r}, f"{{time.time_ns():020d}}-{{os.getpid()}}.json")
+with open(name + ".tmp", "w", encoding="utf-8") as fh:
+    fh.write(json.dumps(args))
+os.replace(name + ".tmp", name)
 what = " ".join(args[:2])
 if what in d["hang"]:
     time.sleep(5)
@@ -355,7 +358,19 @@ else:
 
 
 def calls(log: Path) -> list[list[str]]:
-    return [json.loads(x) for x in log.read_text().splitlines()] if log.exists() else []
+    """Every call the fake gh logged, in the order they started."""
+    return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(log.glob("*.json"))]
+
+
+def test_the_fake_gh_logs_every_call_when_calls_run_at_once(tmp_path: Path) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    gh, log = gh_fake(tmp_path)
+    args = [[str(gh), "run", "list", "--branch", "main", "--event", f"e{i}", "--json", "event"]
+            for i in range(16)]  # fmt: skip
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        list(pool.map(lambda a: subprocess.run(a, capture_output=True, check=True), args))
+    assert sorted(c[5] for c in calls(log)) == sorted(f"e{i}" for i in range(16))
 
 
 def gh_run(n: int, ts: str, conclusion: str, event: str = "push", branch: str = "main") -> dict:
