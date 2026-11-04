@@ -259,6 +259,7 @@ def collect(cfg: Config, project: Project, now: datetime, gh: str | None = None)
         "plan_cards": sum(1 for c in cards if c.kind == "plan"),
         "needs_items_here": routed.get("needs_items", 0),
         "needs_cards": sum(1 for c in cards if c.kind == "needs"),
+        "needs_answered": sum(1 for c in cards if c.kind == "needs" and c.source.get("answer")),
         "needs_headings_without_items": routed.get("needs_headings_without_items", 0),
         "questions": routed.get("questions", 0),
         "questions_waiting": sum(1 for c in cards if c.kind == "question"),

@@ -734,3 +734,63 @@ def test_a_run_link_is_built_from_the_config_never_the_source(
     page = client.get("/i/ci:acme%2Fdemo%23ci").text
     assert 'href="https://github.com/acme/demo/actions/runs/7"' in page
     assert "javascript:" not in page
+
+
+# --- an answer in chat, and Restore -----------------------------------------------------------
+
+
+def test_a_hidden_card_can_be_restored_from_its_page_and_the_board(
+    env: tuple[TestClient, Path],
+) -> None:
+    client, db = env
+    assert client.post("/i/ny%3A1/dismiss", data={}, headers=SAME).status_code == 303
+    page = client.get("/i/ny%3A1").text
+    assert 'action="/i/ny%3A1/restore"' in page and ">Restore</button>" in page
+    board = client.get("/p/demo?hidden=1").text
+    assert board.count("/restore") == 1  # only the hidden card offers it
+    evil = {"Origin": "https://evil.example"}
+    assert client.post("/i/ny%3A1/restore", data={}, headers=evil).status_code == 403
+    with Store(db) as s:
+        assert s.card("ny:1")["col"] == "hidden"
+    back = {"back": "/p/demo?hidden=1"}
+    response = client.post("/i/ny%3A1/restore", data=back, headers=SAME)
+    assert (response.status_code, response.headers["location"]) == (303, "/p/demo?hidden=1")
+    with Store(db) as s:
+        assert s.card("ny:1")["col"] == "needs_you"
+    assert client.post("/i/ny%3A1/restore", data={}, headers=SAME).status_code == 400
+
+
+def test_a_card_you_added_and_hid_can_be_restored(env: tuple[TestClient, Path]) -> None:
+    client, db = env
+    with Store(db) as s:
+        cid = s.add_manual("demo", "", "next", "Paint the door", "", now())
+        s.move_manual(cid, "hidden", now())
+    assert client.post(f"/i/{cid}/restore", data={}, headers=SAME).status_code == 303
+    with Store(db) as s:
+        assert s.manual_card(cid)["col"] == "next"
+
+
+def test_an_answered_ask_shows_its_answer_and_can_go_back(tmp_path: Path) -> None:
+    cfg = Config(projects=(Project(name="demo", path=tmp_path),), claude_home=tmp_path / "c")
+    db = tmp_path / "data" / "board.db"
+    words = "do A <script>alert(1)</script>"
+    answer = {"at": now(-1), "words": words, "session": "s1"}
+    ask = card("ny:1", "done", kind="needs", title="Decide — the sky", event_at=now(-20),
+               suggested_evidence=words, source={"session": "s1", "answer": answer},
+               badges=[f"you answered: “{words}”"])  # fmt: skip
+    with Store(db) as s:
+        s.apply(result([ask]), now())
+    client = TestClient(create_app(cfg, db, PORT), base_url=BASE, follow_redirects=False)
+    board = client.get("/p/demo").text
+    done = board.split('aria-label="Done"', 1)[1]
+    assert "Decide — the sky" in done  # raised 20 days ago, answered yesterday: shown
+    assert "<script>alert(1)" not in board and "&lt;script&gt;alert(1)" in board
+    page = client.get("/i/ny%3A1").text
+    assert "Your answer" in page and "&lt;script&gt;" in page and "<script>alert" not in page
+    assert "Not answered: back to Needs you" in page
+    assert client.post("/i/ny%3A1/restore", data={}, headers=SAME).status_code == 303
+    with Store(db) as s:
+        assert s.card("ny:1")["col"] == "needs_you"
+    page = client.get("/i/ny%3A1").text
+    assert "Your answer" not in page and "Not answered" not in page
+    assert "you put the card back" in page and "did not name this item" not in page

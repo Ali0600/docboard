@@ -176,8 +176,12 @@ def _report(project: config.Project, result: sync.SyncResult, report: ApplyRepor
         print("  " + ", ".join(parts))
     for a in report.accepted:
         print(f"  ACCEPTED {a}: the new baseline")
+    if report.answered:
+        print(f"  {report.answered} answered in chat: moved to Done")
     if report.reopened:
-        print(f"  {report.reopened} reopened: raised again after you resolved them")
+        print(
+            f"  {report.reopened} reopened: raised again after you resolved, dismissed or answered"
+        )
     if report.adopted:
         print(f"  {report.adopted} moved here from another board")
     if report.handed_over:

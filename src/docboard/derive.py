@@ -14,13 +14,13 @@ from datetime import UTC, datetime, timedelta
 from functools import cache
 from itertools import takewhile
 
-from docboard import ids
+from docboard import answers, ids
 from docboard.attribution import Attributor
 from docboard.docsrc import Bullet, RoadmapItem
 from docboard.ghsrc import RED, PullRequest, Run, decisive
 from docboard.route import Router
 from docboard.textsim import jaccard, similar
-from docboard.transcripts import PlanCall, Scan, Touch
+from docboard.transcripts import NeedsItem, PlanCall, Scan, Touch
 
 NEEDS_YOU, IN_PROGRESS, NEXT, IDEAS, DONE = "needs_you", "in_progress", "next", "ideas", "done"
 COLUMNS = (NEEDS_YOU, IN_PROGRESS, NEXT, IDEAS, DONE)
@@ -30,6 +30,7 @@ SESSION_IDLE = timedelta(hours=24)
 CROSS_SESSION_SAME = 0.8
 REPO_WIDE = 3  # a PR whose files span this many sub-projects is the project's, not one game's
 BODY_CAP = 8192
+ANSWER_BADGE = 48  # characters of the owner's answer on a card's badge (the card page has more)
 
 _H1 = re.compile(r"^#\s+(.+?)\s*$", re.M)
 _PLAN_PREFIX = re.compile(r"^(?:(?:DONE|DRAFT|NOW|NEXT)\s*[—–:-]\s*|Plan:\s*)+", re.I)
@@ -205,6 +206,14 @@ class _Deriver:
             self.humans[h.session].append(h)
         for lst in self.humans.values():
             lst.sort(key=lambda h: _t(h.ts))
+        # The turns the owner typed (no slash or `!` command, nothing the app wrote): only these
+        # can answer a Needs-you item.
+        self.spoken = {
+            s: [h for h in hs if answers.spoken(h.text)] for s, hs in self.humans.items()
+        }
+        # Each Needs-you card's answers, one per raise the owner answered: (at, words, session).
+        self.answers: dict[str, list[tuple[str, str, str]]] = defaultdict(list)
+        self.raise_blocks: dict[str, set[str]] = defaultdict(set)  # card id -> its raises' messages
         self.groups: dict[str, list[_PlanGroup]] = {}  # each session's own runs of approvals
         self.merged: dict[str, _PlanGroup] = {}  # first call id -> one plan, across sessions
         self.holding: dict[str, set[str]] = {}  # first call id -> the sessions holding it
@@ -728,8 +737,51 @@ class _Deriver:
 
     # --- owner-facing transcript items ---------------------------------------------------
 
+    def _blocks(self) -> None:
+        """Each Needs-you message's items as a reply sees them, and when each session (a
+        continued or forked one holds its parent's copies) raised a block."""
+        scan = self.inp.scan
+        self.block_asks: dict[str, list[answers.Ask]] = defaultdict(list)
+        times: dict[str, set[datetime]] = defaultdict(set)
+        for (uuid, n), item in sorted(scan.needs.items()):
+            self.block_asks[uuid].append(answers.Ask(n, item.kind, answers.options(item.body)))
+            for s in scan.holding("needs", (uuid, n), item.session):
+                times[s].add(_t(item.ts))
+        self.block_times = {s: sorted(ts) for s, ts in times.items()}
+        self._replies: dict[tuple[str, str], dict[int, str]] = {}
+
+    def _answer(self, it: NeedsItem) -> tuple[str, str, str] | None:
+        """The owner's first typed turn that answers this raise, in any session holding it,
+        before that session's next Needs-you block: (at, the words, session)."""
+        found = []
+        at = _t(it.ts)
+        for s in self.inp.scan.holding("needs", (it.uuid, it.n), it.session):
+            times = self.block_times.get(s, [])
+            i = bisect_right(times, at)
+            until = times[i] if i < len(times) else _NEVER
+            for h in self.spoken.get(s, ()):
+                ht = _t(h.ts)
+                if ht <= at:
+                    continue
+                if ht >= until:
+                    break
+                key = (h.uuid, it.uuid)
+                if key not in self._replies:
+                    self._replies[key] = answers.answered(h.text, self.block_asks[it.uuid])
+                words = self._replies[key].get(it.n)
+                if words:
+                    found.append((h.ts, words, s))
+                    break
+        return min(found, key=lambda a: _t(a[0])) if found else None
+
+    def _note_answer(self, card_id: str, it: NeedsItem) -> None:
+        got = self._answer(it)
+        if got is not None:
+            self.answers[card_id].append(got)
+
     def needs(self) -> None:
         scan = self.inp.scan
+        self._blocks()
         by_session: dict[str, list] = defaultdict(list)
         for item in scan.needs.values():
             by_session[item.session].append(item)
@@ -743,6 +795,11 @@ class _Deriver:
                 twin = next((c for c, title in kept if similar(it.title, [title])), None)
                 if twin is not None:
                     self._raise(twin, 1, session, it.ts)
+                    if it.uuid not in self.raise_blocks[twin.id]:
+                        # Two items of one block are two asks, whatever words they share: only a
+                        # raise from another block can answer the card.
+                        self.raise_blocks[twin.id].add(it.uuid)
+                        self._note_answer(twin.id, it)
                     self.tally[(self.owner[twin.id][0], "needs_items")] += 1
                     continue
                 at = _t(it.ts)
@@ -768,6 +825,8 @@ class _Deriver:
                     },
                 )
                 self._own(card, self._ask_owner(session, at, it.title, it.body), session)
+                self.raise_blocks[card.id].add(it.uuid)
+                self._note_answer(card.id, it)
                 self.tally[(self.owner[card.id][0], "needs_items")] += 1
                 kept.append((card, it.title))
             per_session.extend(kept)
@@ -787,9 +846,27 @@ class _Deriver:
             )
             if twin is not None:
                 self._raise(twin, card.raised, card.source["session"], card.raised_at)
+                self.answers[twin.id].extend(self.answers.pop(card.id, ()))
                 continue
             kept_all.append((card, title))
             self.cards.append(card)
+
+    def answered(self) -> None:
+        """A Needs-you item the owner answered in chat after its latest raise moves to Done, the
+        answer quoted; a raise after the answer leaves it open. Runs after the wrap-ups, which
+        can raise an item again."""
+        for card in self.cards:
+            if card.kind != "needs":
+                continue
+            latest = _t(card.raised_at or card.event_at)
+            after = [a for a in self.answers.get(card.id, ()) if _t(a[0]) > latest]
+            if not after:
+                continue
+            at, words, session = min(after, key=lambda a: _t(a[0]))
+            card.column = DONE
+            card.source["answer"] = {"at": at, "words": words, "session": session}
+            short = words if len(words) <= ANSWER_BADGE else words[: ANSWER_BADGE - 1] + "\u2026"
+            card.badges.append(f"you answered: \u201c{short}\u201d")
 
     def questions(self) -> None:
         scan = self.inp.scan
@@ -997,6 +1074,7 @@ def derive(
     d.needs()
     d.questions()
     d.wraps()
+    d.answered()
     d.proposals()
     d.ci()
     d.headings()

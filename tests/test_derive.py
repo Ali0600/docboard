@@ -124,14 +124,133 @@ def test_an_unapproved_plan_waits_on_the_owner(tmp_path: Path) -> None:
     assert got["pl:p1"].column == D.NEEDS_YOU and got["pl:p1"].sub == "alpha"
 
 
-def test_a_needs_item_stays_in_needs_you_whatever_followed_it(tmp_path: Path) -> None:
+PICK = "Decide — which sky Alpha Game gets"
+PICK_TOO = "Decide — how loud the Beta music is"
+
+
+def block(*items: str) -> str:
+    """A Needs-you block whose Decide items offer options A and B."""
+    text = f.needs_block(*items)
+    return text.replace(
+        "*Why:* reasons.", "*Why:* reasons.\n\n*Options:*\n- **A)** one\n- **B)** two"
+    )
+
+
+def test_an_item_answered_by_its_letter_moves_to_done_with_the_answer(tmp_path: Path) -> None:
     recs = [
-        f.assistant_text(S, "a1", "2026-10-26T10:00:00Z", f.needs_block("Do — set the token")),
-        f.human(S, "h1", "2026-10-26T10:05:00Z", "done, set it"),
+        f.assistant_text(S, "a1", "2026-10-26T10:00:00Z", block(PICK)),
+        f.human(S, "h1", "2026-10-26T10:05:00Z", "do A"),
     ]
     card = cards(tmp_path, recs)["ny:a1:1"]
-    assert card.column == D.NEEDS_YOU
-    assert card.suggested_evidence == "done, set it"
+    assert card.column == D.DONE
+    assert card.source["answer"] == {
+        "at": "2026-10-26T10:05:00Z", "words": "do A", "session": S,
+    }  # fmt: skip
+    assert "you answered: “do A”" in card.badges
+
+
+def test_a_reply_that_does_not_name_the_item_leaves_it_open(tmp_path: Path) -> None:
+    recs = [
+        f.assistant_text(S, "a1", "2026-10-26T10:00:00Z", block(PICK)),
+        f.human(S, "h1", "2026-10-26T10:05:00Z", "Ok, can the menu also get a dark mode?"),
+    ]
+    card = cards(tmp_path, recs)["ny:a1:1"]
+    assert card.column == D.NEEDS_YOU and "answer" not in card.source
+    assert card.suggested_evidence == "Ok, can the menu also get a dark mode?"
+
+
+def test_only_a_turn_the_owner_typed_answers(tmp_path: Path) -> None:
+    recs = [
+        f.assistant_text(S, "a1", "2026-10-26T10:00:00Z", block(PICK)),
+        f.human(S, "h1", "2026-10-26T10:01:00Z", "<bash-input>do A</bash-input>"),
+        f.human(S, "h2", "2026-10-26T10:02:00Z", "<command-name>/do B</command-name>"),
+        f.human(S, "h3", "2026-10-26T10:03:00Z", "<scheduled-task>do A</scheduled-task>"),
+    ]
+    assert cards(tmp_path, recs)["ny:a1:1"].column == D.NEEDS_YOU
+    recs.append(f.human(S, "h4", "2026-10-26T10:04:00Z", "go with B"))
+    assert cards(tmp_path, recs)["ny:a1:1"].source["answer"]["words"] == "go with B"
+
+
+def test_an_answer_after_a_question_about_the_item_still_counts(tmp_path: Path) -> None:
+    recs = [
+        f.assistant_text(S, "a1", "2026-10-26T10:00:00Z", block(PICK)),
+        f.human(S, "h1", "2026-10-26T10:05:00Z", "What would B cost?"),
+        f.assistant_text(S, "a2", "2026-10-26T10:06:00Z", "B costs a day."),
+        f.human(S, "h2", "2026-10-26T10:10:00Z", "then do A"),
+    ]
+    card = cards(tmp_path, recs)["ny:a1:1"]
+    assert (card.column, card.source["answer"]["at"]) == (D.DONE, "2026-10-26T10:10:00Z")
+
+
+def test_a_reply_answers_only_the_latest_block_before_it(tmp_path: Path) -> None:
+    recs = [
+        f.assistant_text(S, "a1", "2026-10-26T10:00:00Z", block(PICK)),
+        f.assistant_text(S, "a2", "2026-10-26T10:30:00Z", block(PICK_TOO)),
+        f.human(S, "h1", "2026-10-26T10:35:00Z", "do A"),
+    ]
+    got = cards(tmp_path, recs)
+    assert (got["ny:a1:1"].column, got["ny:a2:1"].column) == (D.NEEDS_YOU, D.DONE)
+
+
+def test_a_bare_letter_two_items_offer_answers_neither_but_a_number_does(tmp_path: Path) -> None:
+    ask = f.assistant_text(S, "a1", "2026-10-26T10:00:00Z", block(PICK, PICK_TOO))
+    got = cards(tmp_path, [ask, f.human(S, "h1", "2026-10-26T10:05:00Z", "do B")])
+    assert (got["ny:a1:1"].column, got["ny:a1:2"].column) == (D.NEEDS_YOU, D.NEEDS_YOU)
+    got = cards(tmp_path, [ask, f.human(S, "h1", "2026-10-26T10:05:00Z", "2: B")])
+    assert (got["ny:a1:1"].column, got["ny:a1:2"].column) == (D.NEEDS_YOU, D.DONE)
+
+
+def test_an_answer_to_another_item_folded_into_the_card_does_not_answer_it(
+    tmp_path: Path,
+) -> None:
+    # The two titles share enough words to fold into one card (the 0.4 rule), but two items of
+    # one block are two asks: "do A" picks the licence (only it has options), not the Do.
+    text = f.needs_block("Do — publish the demo repo", "Decide — a licence for the demo repo")
+    text += "\n\n*Options:*\n- **A)** one\n- **B)** two\n"
+    recs = [
+        f.assistant_text(S, "a1", "2026-10-26T10:00:00Z", text),
+        f.human(S, "h1", "2026-10-26T10:05:00Z", "do A"),
+    ]
+    got = cards(tmp_path, recs)
+    assert "ny:a1:2" not in got and got["ny:a1:1"].raised == 2
+    assert got["ny:a1:1"].column == D.NEEDS_YOU
+
+
+def test_a_raise_after_the_answer_leaves_the_item_open(tmp_path: Path) -> None:
+    recs = [
+        f.assistant_text(S, "a1", "2026-10-26T10:00:00Z", block(PICK)),
+        f.human(S, "h1", "2026-10-26T10:05:00Z", "do A"),
+        f.assistant_text(S, "a2", "2026-10-26T12:00:00Z", block(PICK)),  # A changed something
+    ]
+    card = cards(tmp_path, recs)["ny:a1:1"]
+    assert (card.column, card.raised) == (D.NEEDS_YOU, 2)
+    answered_again = [*recs, f.human(S, "h2", "2026-10-26T12:05:00Z", "do B")]
+    card = cards(tmp_path, answered_again)["ny:a1:1"]
+    assert (card.column, card.source["answer"]["words"]) == (D.DONE, "do B")
+    ask = {"recap": "Built it.", "ask": PICK}  # a wrap-up repeating it is a raise too
+    recs[2] = f.tool_use(S, "w1", "2026-10-26T12:00:00Z", "mcp__ccd_turn__wrap_up", "t1", ask)
+    assert cards(tmp_path, recs)["ny:a1:1"].column == D.NEEDS_YOU
+
+
+def test_an_answer_to_the_same_ask_raised_in_another_session_counts(tmp_path: Path) -> None:
+    recs = [
+        f.assistant_text(S, "a1", "2026-10-26T10:00:00Z", block(PICK)),
+        f.assistant_text("s2", "b1", "2026-10-26T11:00:00Z", block(PICK)),  # one card, ny:a1:1
+        f.human("s2", "h1", "2026-10-26T11:05:00Z", "do A"),
+    ]
+    card = cards(tmp_path, recs)["ny:a1:1"]
+    assert (card.raised, card.column, card.source["answer"]["session"]) == (2, D.DONE, "s2")
+
+
+def test_an_answer_in_a_continued_session_counts(tmp_path: Path) -> None:
+    recs = [
+        f.assistant_text(S, "a1", "2026-10-26T10:00:00Z", block(PICK)),
+        # The continued session holds a copy of the ask and is where the owner answered.
+        f.assistant_text("s2", "a1", "2026-10-26T10:00:00Z", block(PICK)),
+        f.human("s2", "h1", "2026-10-26T11:00:00Z", "do B"),
+    ]
+    card = cards(tmp_path, recs)["ny:a1:1"]
+    assert card.column == D.DONE and card.source["answer"]["session"] == "s2"
 
 
 def test_a_re_raised_item_is_one_card(tmp_path: Path) -> None:

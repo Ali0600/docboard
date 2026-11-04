@@ -37,6 +37,8 @@ COLUMN_NAMES = {
     NEEDS_YOU: "Needs you", IN_PROGRESS: "In progress", NEXT: "Next", "ideas": "Ideas",
     DONE: "Done", HIDDEN: "Hidden",
 }  # fmt: skip
+# What the owner had done before an ask was raised again ("raised again after you …").
+REOPENED = {DONE: "resolved", HIDDEN: "dismissed", "answered": "answered"}
 CSP = (
     "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; "
     "connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
@@ -170,6 +172,13 @@ def _card_view(row: object, now: datetime) -> dict:
     keys = row.keys()  # type: ignore[attr-defined]
     get = lambda k, d=None: row[k] if k in keys else d  # noqa: E731
     is_manual = get("kind") is None
+    answer = json.loads(get("source") or "{}").get("answer") if get("kind") == "needs" else None
+    if not (row["col"] == DONE and get("column_derived") == DONE):
+        answer = None  # an answer counts while it keeps the card in Done, not once you moved it
+    # An ask counts from its latest raise; one in Done for an answer, from the answer.
+    at = get("raised_at") or get("event_at") or get("created_at") or ""
+    if answer:
+        at = answer.get("at") or at
     return {
         "id": row["id"],
         "kind": get("kind") or "card",
@@ -181,9 +190,9 @@ def _card_view(row: object, now: datetime) -> dict:
         "badges": json.loads(get("badges", "[]")),
         "raised": get("raised", 1),
         "older": bool(get("older", 0)),
-        # An ask raised again counts from its latest raise.
-        "event_at": get("raised_at") or get("event_at") or get("created_at") or "",
-        "age": _age(get("raised_at") or get("event_at") or get("created_at") or "", now),
+        "event_at": at,
+        "age": _age(at, now),
+        "answer": answer,
         "reopened": bool(get("reopened_at")) and row["col"] == NEEDS_YOU,
         "reopened_was": get("reopened_was"),
         "source_gone": bool(get("source_gone_at")) and not get("gone_at"),
@@ -204,6 +213,7 @@ def create_app(cfg: Config, db_path: Path, port: int = 8742) -> FastAPI:
     templates.env.filters["linkify"] = linkify
     templates.env.filters["plain"] = plain
     templates.env.globals["COLUMN_NAMES"] = COLUMN_NAMES
+    templates.env.globals["REOPENED"] = REOPENED
     app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
     app.state.board = board
 
@@ -516,6 +526,13 @@ def create_app(cfg: Config, db_path: Path, port: int = 8742) -> FastAPI:
         if card_id.startswith("mc:"):
             return _act(card_id, back, lambda s: s.move_manual(card_id, HIDDEN, t))
         return _act(card_id, back, lambda s: s.dismiss(card_id, t))
+
+    @app.post("/i/{card_id:path}/restore")
+    def restore(card_id: str, back: str = Form("")) -> Response:
+        t = now().isoformat()
+        if card_id.startswith("mc:"):
+            return _act(card_id, back, lambda s: s.restore_manual(card_id, t))
+        return _act(card_id, back, lambda s: s.restore(card_id, t))
 
     @app.post("/i/{card_id:path}/sub")
     def set_sub(card_id: str, sub: str = Form(""), back: str = Form("")) -> Response:

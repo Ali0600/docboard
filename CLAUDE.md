@@ -56,9 +56,15 @@
 - **Card ids are frozen** (`ids.py`, `ID_VERSION`, golden values in `tests/test_ids.py`). An id
   never includes a file path. Changing a derivation means a new version and a migration of stored
   moves.
-- **A Needs-you item never leaves that column by derivation**; only the owner's action moves it.
-  A raise that comes after the owner resolved or dismissed it reopens it (the owner's call,
-  2026-10-28), and an open one stays when its transcript is deleted.
+- **A Needs-you item leaves that column only by the owner**: an action on the board, or an answer
+  in its session that names it (`answers.py`: an option letter it offers, a numbered line, "done"
+  for a block's one Do), read only from turns the owner typed, before that session's next
+  Needs-you block; the answer moves it to Done with the words quoted (the owner's call,
+  2026-11-04). Nothing else derives it out: no "ok", no new request, no answer to another item
+  folded into its card. A raise after the owner resolved, dismissed or answered it reopens it
+  (2026-10-28), and an open one stays when its transcript is deleted. A change to what counts as
+  an answer is replayed on a copy of the live board first, every moved card read (DECISIONS,
+  2026-11-04).
 - **The page's guards stay whole:** the loopback Host allowlist, the same-origin check on every
   POST (`web._same_origin`), escaped output (no `|safe` on source text), http(s)-only links, the
   Content-Security-Policy with no script but `static/board.js`, and no third-party JavaScript. A

@@ -565,3 +565,105 @@ def test_no_gh_keeps_the_ci_cards(store: Store) -> None:
     store.apply(result([card("ci:acme/demo#ci", "in_progress", kind="ci")]), now())
     store.apply(result([], degraded=["gh: not installed", "ci: gh not installed"]), now())
     assert store.card("ci:acme/demo#ci")["gone_at"] is None
+
+
+# --- an answer in chat, and Restore -----------------------------------------------------------
+
+
+def answered_ask(cid: str = "ny:1") -> object:
+    answer = {"at": now(-1), "words": "do A", "session": "s1"}
+    source = {"session": "s1", "answer": answer}
+    return card(cid, "done", kind="needs", event_at=now(-3), source=source,
+                badges=["you answered: \u201cdo A\u201d"])  # fmt: skip
+
+
+def test_an_answer_moves_a_dismissed_ask_to_done_and_says_why(store: Store) -> None:
+    store.apply(result([card("ny:1", "needs_you", kind="needs", event_at=now(-3))]), now(-2))
+    store.dismiss("ny:1", now(-2))
+    report = store.apply(result([answered_ask()]), now())
+    assert col(store, "ny:1") == "done" and report.answered == 1
+    detail = store.events("ny:1")[0]["detail"]
+    assert detail.startswith("you answered it in chat: “do A”")
+    assert "your move to hidden no longer applies" in detail
+
+
+def test_a_raise_after_an_answer_reopens_it_as_answered(store: Store) -> None:
+    store.apply(result([answered_ask()]), now(-1))
+    again = card("ny:1", "needs_you", kind="needs", event_at=now(-3), raised=2, raised_at=now())
+    report = store.apply(result([again]), now())
+    row = store.card("ny:1")
+    assert (row["col"], row["reopened_was"]) == ("needs_you", "answered")
+    assert "after you answered it" in store.events("ny:1")[0]["detail"]
+    assert report.reopened == 1
+
+
+def test_restore_puts_a_hidden_card_back_where_its_source_puts_it(store: Store) -> None:
+    store.apply(result([card("ny:1", "needs_you", kind="needs")]), now())
+    store.dismiss("ny:1", now())
+    assert store.restore("ny:1", now()) == "needs_you"
+    assert (col(store, "ny:1"), store.card("ny:1")["moved"]) == ("needs_you", 0)
+    assert (store.events("ny:1")[0]["kind"], store.events("ny:1")[0]["detail"]) == (
+        "restore", "hidden → needs_you",
+    )  # fmt: skip
+
+
+def test_restore_puts_a_card_back_in_the_column_you_hid_it_from(store: Store) -> None:
+    store.apply(result([answered_ask(), card("c1", "next")]), now())
+    store.restore("ny:1", now())  # not answered: Needs you, against its source's Done
+    store.dismiss("ny:1", now())
+    assert store.restore("ny:1", now()) == "needs_you"
+    store.move("c1", "in_progress", now())
+    store.move("c1", "hidden", now())
+    assert store.restore("c1", now()) == "in_progress"
+
+
+def test_restore_sends_an_answered_ask_back_to_needs_you_and_it_stays(store: Store) -> None:
+    store.apply(result([answered_ask()]), now())
+    assert store.restore("ny:1", now()) == "needs_you"
+    store.apply(result([answered_ask()]), now())  # the same answer: your move holds
+    assert col(store, "ny:1") == "needs_you"
+
+
+def test_restore_refuses_a_card_neither_hidden_nor_answered(store: Store) -> None:
+    store.apply(result([card("c1", "next"), card("ny:1", "done", kind="needs")]), now())
+    for cid in ("c1", "ny:1", "nope"):
+        with pytest.raises(StoreError):
+            store.restore(cid, now())
+
+
+def test_restore_keeps_open_an_ask_whose_transcript_went_while_hidden(store: Store) -> None:
+    ask = card("ny:1", "needs_you", kind="needs", source={"session": "s1"})
+    r = result([ask])
+    r.sessions = {"s1"}
+    store.apply(r, now())
+    store.dismiss("ny:1", now())
+    store.apply(result([]), now())  # its transcript is gone, and it was hidden: it goes
+    assert store.card("ny:1")["gone_at"] is not None
+    store.restore("ny:1", now())
+    row = store.card("ny:1")
+    assert (row["col"], row["gone_at"]) == ("needs_you", None)
+    store.apply(result([]), now())  # open again: the next sync keeps it
+    row = store.card("ny:1")
+    assert row["gone_at"] is None and row["source_gone_at"] is not None
+
+
+def test_undoing_a_dismiss_keeps_open_an_ask_whose_transcript_went_meanwhile(
+    store: Store,
+) -> None:
+    ask = card("ny:1", "needs_you", kind="needs", source={"session": "s1"})
+    r = result([ask])
+    r.sessions = {"s1"}
+    store.apply(r, now())
+    batch = store.move_batch("demo", ["ny:1"], "hidden", "dismiss", now())
+    store.apply(result([]), now())
+    store.undo_batch(batch, "demo", now())
+    assert store.card("ny:1")["gone_at"] is None
+
+
+def test_a_card_you_added_is_restored_to_its_column(store: Store) -> None:
+    cid = store.add_manual("demo", "", "in_progress", "Paint the door", "", now())
+    store.move_manual(cid, "hidden", now())
+    assert store.restore_manual(cid, now()) == "in_progress"
+    assert store.manual_card(cid)["col"] == "in_progress"
+    with pytest.raises(StoreError):
+        store.restore_manual(cid, now())  # not hidden any more

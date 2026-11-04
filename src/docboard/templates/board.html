@@ -17,7 +17,7 @@
     {% if c.moved %}<span class="you">moved by you</span>{% endif %}
   </div>
   {% if c.badges or c.reopened or c.source_gone %}<div class="badges">
-    {%- if c.reopened %}<span class="badge flag">raised again after you {{ "dismissed" if c.reopened_was == "hidden" else "resolved" }} it</span>{% endif %}
+    {%- if c.reopened %}<span class="badge flag">raised again after you {{ REOPENED.get(c.reopened_was, "resolved") }} it</span>{% endif %}
     {%- if c.source_gone %}<span class="badge">transcript gone</span>{% endif %}
     {%- for b in c.badges %}<span class="badge">{{ b }}</span>{% endfor %}</div>{% endif %}
   {% if c.child_cards %}
@@ -32,6 +32,12 @@
     </select>
     <button type="submit">Move</button>
   </form>
+  {% if c.col == "hidden" %}
+  <form class="move" method="post" action="{{ c.href }}/restore">
+    <input type="hidden" name="back" value="{{ back }}">
+    <button type="submit">Restore</button>
+  </form>
+  {% endif %}
 </article>
 {% endmacro %}
 
@@ -105,7 +111,7 @@
   {% endfor %}
 </div>
 <p class="muted foot">
-  {% if hidden and not show_hidden %}<a href="?sub={{ sub|urlencode }}&amp;hidden=1">{{ hidden }} hidden by you</a>. {% endif %}
+  {% if hidden and not show_hidden %}<a href="?sub={{ sub|urlencode }}&amp;hidden=1">{{ hidden }} hidden by you</a> (each can be restored). {% endif %}
   Cards come from the docs, PRs, plans and sessions; a move you make holds until its source changes.
 </p>
 {% if gone %}

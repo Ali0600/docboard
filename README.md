@@ -6,9 +6,10 @@ Code, and the "Needs you" items those sessions raised. Every source is read-only
 remembered in a local SQLite file. A monorepo's sub-projects (each game of a games monorepo) get a
 board of their own.
 
-Status: in use. `docboard serve` shows the board; cards can be dragged, resolved, dismissed, given
-another game or added by hand, and a triage page clears Needs-you items in bulk, per game, with a
-confirm step and an undo for each batch. A Claude Code `/board` command runs `docboard board` from
+Status: in use. `docboard serve` shows the board; cards can be dragged, resolved, dismissed (and
+restored), given another game or added by hand, and a triage page clears Needs-you items in bulk,
+per game, with a confirm step and an undo for each batch. A Needs-you item you answer in its
+session ("do A", "1: B") moves to Done by itself, your reply quoted on the card. A Claude Code `/board` command runs `docboard board` from
 any session. It replaced an earlier dashboard on 2026-10-27.
 
 ## Run it
@@ -63,14 +64,15 @@ board of its own sessions. Shipping the PC's asks to the Mac's board is not buil
 Backlog).
 
 Opening a board older than two minutes refreshes it in the background and the page reloads itself
-when the sync is done; "Sync now" does it at once. `docboard board` says when the running page
-has older code than the checkout, so it needs a restart.
+when the sync is done; "Sync now" does it at once. That refresh runs the code the page started
+with, so after an update it syncs by the old rules until the page restarts; `docboard board` says
+when the running page has older code than the checkout.
 
 ## How it works
 
 | Column | From |
 |---|---|
-| Needs you | "Needs you" items (`**1. Decide — …**`, `**1. Do — …**`) in the assistant's own text, unanswered questions, unapproved plans, wrap-up asks. They leave only by the owner's action. |
+| Needs you | "Needs you" items (`**1. Decide — …**`, `**1. Do — …**`) in the assistant's own text, unanswered questions, unapproved plans, wrap-up asks. They leave by the owner's action on the board, or an item by the owner's answer in its session that names it (an option letter like "do A", a numbered "1: B", or "done" for a block's one Do), which moves it to Done. |
 | In progress | open PRs, and plans whose PRs are still landing |
 | Next | approved plans with no PR yet, unticked ROADMAP items |
 | Ideas | the DECISIONS.md Backlog |
@@ -114,11 +116,14 @@ has older code than the checkout, so it needs a restart.
   its cards; they are frozen behind `ID_VERSION`.
 - **The store** (`store.py`, SQLite, owner-only) keeps the last sync's cards and your moves. A move
   holds while the card's source still says what it said when you moved it; when the source moves
-  the card, your move is dropped and the card's history says so. Needs-you cards never move by
-  themselves, so resolving or dismissing one is permanent. A reworded Backlog bullet keeps your
-  moves; a card gone from its source is kept and listed, never deleted. An ask raised again after
-  you resolved it comes back to Needs you, aged from its latest raise, and an open ask stays even
-  when Claude Code deletes its transcript. A sync whose source collapsed (fell to zero, or by more
+  the card, your move is dropped and the card's history says so. A Needs-you card leaves only by
+  you: a move on the board, or an answer in its session (`answers.py`, read only from turns you
+  typed, before the session's next Needs-you block), which moves it to Done with your words
+  quoted and dates it by the answer. A hidden card has a Restore that puts it back in the column
+  you hid it from, and an answered one a button back to Needs you. A reworded Backlog bullet keeps
+  your moves; a card gone from its source is kept and listed, never deleted. An ask raised again
+  after you resolved, dismissed or answered it comes back to Needs you, aged from its latest raise,
+  and an open ask stays even when Claude Code deletes its transcript. A sync whose source collapsed (fell to zero, or by more
   than half, since the last good one) writes nothing and says so on the page, with the
   `--accept-drop` command for a drop that is real. With GitHub unreachable the rest still syncs,
   while PR and plan cards keep their last good state, and the banner says since when. A sync that
@@ -151,7 +156,9 @@ has older code than the checkout, so it needs a restart.
   across continued sessions counted once.
 - An idempotent sources-to-cards derivation with content-derived, versioned ids. A test moves a doc
   from the root into a sub-project and proves all of its cards keep their ids; a routing test
-  proves every session card lands on exactly one of the configured boards.
+  proves every session card lands on exactly one of the configured boards. Its reader of the
+  owner's chat answers was calibrated on 525 real asks and replayed over the live board before it
+  shipped (33 of 904 cards moved, each read by hand).
 - Guards each proven by a test that failed first (about 280 tests added over seven PRs, each PR's
   red run in its description), among them the id rule, the collapse floor that writes nothing,
   a gh outage that freezes PRs instead of refusing the sync, and the page's Host and same-origin
