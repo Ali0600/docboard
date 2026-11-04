@@ -2,6 +2,19 @@
 
 Teachable things that came up building docboard. Newest first.
 
+### On Windows, appends from processes running at once can tear a shared file
+
+A test's fake `gh` logged every call by appending one JSON line to one file. Once the four CI
+queries ran at once, the Windows CI leg sometimes read a broken line. macOS and Linux never did,
+because there a small write to a file opened for appending lands whole.
+
+**Why it came up:** main's CI went red on a docs-only commit (5c25771), on Windows only, with a
+`JSONDecodeError` in the test's own log reader. The product code was not involved.
+
+**Takeaway:** when helpers run in parallel, give each its own output file (written under a
+temporary name, then renamed) instead of appending to a shared one, and pin it with a test that
+runs many at once.
+
 ### A test that builds the middle by hand never sees the handoff drop a field
 
 The page's tests fill a sync result by hand (game names, a session's answers) and check what
