@@ -6,7 +6,7 @@
 |---|---|
 | `./scripts/gate.sh` | `uv sync --locked`, `ruff check`, `ruff format --check`, `pytest`; every step runs and reports, non-zero if any failed. CI runs exactly this. |
 | `uv run docboard sync --dry-run [--project p] [--sample n] [--json file] [--baseline file]` | Reads every source of the configured projects and prints counts per source and the board as a table; `--json` writes every card (owner-only file), `--baseline` exits 1 when a source collapsed since that file. |
-| `uv run docboard sync [--project p] [--db file]` | Reads every source into the board's database (`data/board.db`) under a machine-wide lock; refuses, writing nothing, when a source collapsed since the last good sync. A crash is stored as a `failed` run and the next project still syncs (exit 1). |
+| `uv run docboard sync [--project p] [--db file]` | Reads every source into the board's database (the data folder's `board.db`) under a machine-wide lock; refuses, writing nothing, when a source collapsed since the last good sync. A crash is stored as a `failed` run and the next project still syncs (exit 1). |
 | `uv run docboard sync --accept-drop --project p` | Stores a sync the floor refused, when the owner says the drop is real; only the drops the last refusal named are accepted. The owner's call: never run it unasked. |
 | `uv run docboard serve [--port 8742]` | The board on `http://127.0.0.1:8742`; any host but loopback is refused. Start it in the background and check it in the built-in browser. |
 | `uv run docboard board [--cwd dir] [--no-sync] [--port 8742]` | Finds the configured project (and sub-project) a folder belongs to, a git worktree's included, syncs that project and prints its board's link and whether the page is running (exit 2: in no configured project; 1: the sync was not stored). The global `/board` command runs it from a session's folder. |
@@ -27,7 +27,16 @@
   checkout and worktree. A test or a branch never touches it: the tests run under their own
   `DOCBOARD_HOME` (`tests/conftest.py`), and a branch is tried with `DOCBOARD_HOME` pointing at a
   scratch copy. Never commit a file from there; the old places (`data/`, `config/projects.toml`,
-  `config/private-identifiers.txt`) stay in `.gitignore`.
+  `config/private-identifiers.txt`) stay in `.gitignore`. Copy the live board for a check with
+  SQLite's backup from a read-only open (`?mode=ro`) while a `board.db-wal` exists (the page is
+  writing); a byte copy is safe only when no `-wal` is there, and a read-only open fails while no
+  `-shm` exists. Never stop or POST to the owner's page on 8742; checks serve on 8743.
+- **A review agent never writes in the tree under review** (say so in its prompt), and commits
+  stage files by name, reading every name `git diff --cached --stat` lists: one agent left a file
+  of private transcript titles in a worktree, and `git add -A` took it.
+- **Before a push, scan with the private terms** (read from the data folder): `uv run docboard
+  privacy` on the files, `--commits origin/main..HEAD`, and `--stdin` on the PR's title and body;
+  a name found in an unpushed commit means rebuilding the branch, never a fix on top.
 - **Every push runs the privacy scan** (`git config core.hooksPath .githooks`, once per clone);
   never push with `--no-verify`. Before `gh pr create`, pipe the title and body through
   `uv run docboard privacy --stdin`.
